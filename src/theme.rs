@@ -1,0 +1,169 @@
+use std::process::Command;
+use std::sync::Arc;
+
+use eframe::egui::{
+    self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Margin, Stroke,
+    TextStyle, Visuals,
+};
+
+pub const BG: Color32 = Color32::from_rgb(0x0d, 0x0f, 0x13);
+pub const PANEL: Color32 = Color32::from_rgb(0x12, 0x15, 0x1a);
+pub const CARD: Color32 = Color32::from_rgb(0x18, 0x1c, 0x23);
+pub const CARD_HOVER: Color32 = Color32::from_rgb(0x1f, 0x24, 0x2d);
+pub const CARD_SELECTED: Color32 = Color32::from_rgb(0x1c, 0x26, 0x3a);
+pub const BORDER: Color32 = Color32::from_rgb(0x25, 0x2a, 0x33);
+pub const TEXT: Color32 = Color32::from_rgb(0xe7, 0xe9, 0xee);
+pub const MUTED: Color32 = Color32::from_rgb(0x87, 0x90, 0x9e);
+pub const FAINT: Color32 = Color32::from_rgb(0x52, 0x59, 0x66);
+pub const ACCENT: Color32 = Color32::from_rgb(0x5b, 0x9b, 0xff);
+pub const GREEN: Color32 = Color32::from_rgb(0x3d, 0xd6, 0x8c);
+pub const AMBER: Color32 = Color32::from_rgb(0xf5, 0xa5, 0x24);
+pub const RED: Color32 = Color32::from_rgb(0xf1, 0x60, 0x63);
+pub const PURPLE: Color32 = Color32::from_rgb(0xb3, 0x94, 0xff);
+
+/// Font Awesome codepoints, present in every Nerd Font.
+pub mod icon {
+    pub const POWER: &str = "\u{f011}";
+    pub const REFRESH: &str = "\u{f021}";
+    pub const COPY: &str = "\u{f0c5}";
+    pub const SEND: &str = "\u{f1d8}";
+    pub const DOWNLOAD: &str = "\u{f019}";
+    pub const SEARCH: &str = "\u{f422}";
+    pub const TAG: &str = "\u{f02b}";
+    pub const USER: &str = "\u{f007}";
+    pub const GLOBE: &str = "\u{f0ac}";
+    pub const GRAPH: &str = "\u{f1e0}";
+    pub const LIST: &str = "\u{f03a}";
+    pub const BOLT: &str = "\u{f0e7}";
+    pub const LINUX: &str = "\u{f17c}";
+    pub const ANDROID: &str = "\u{f17b}";
+    pub const WINDOWS: &str = "\u{f17a}";
+    pub const APPLE: &str = "\u{f179}";
+    pub const SERVER: &str = "\u{f233}";
+    pub const WARN: &str = "\u{f071}";
+    pub const INBOX: &str = "\u{f01c}";
+    pub const CLOSE: &str = "\u{f00d}";
+    pub const TRASH: &str = "\u{f1f8}";
+    pub const ARROW_RIGHT: &str = "\u{f061}";
+    pub const ARROW_LEFT: &str = "\u{f060}";
+    pub const BAN: &str = "\u{f05e}";
+    pub const CHECK: &str = "\u{f00c}";
+}
+
+pub fn os_icon(os: &str) -> &'static str {
+    match os {
+        "linux" => icon::LINUX,
+        "android" => icon::ANDROID,
+        "windows" => icon::WINDOWS,
+        "macOS" | "iOS" | "tvOS" => icon::APPLE,
+        _ => icon::SERVER,
+    }
+}
+
+fn font_file(pattern: &str) -> Option<Vec<u8>> {
+    let out = Command::new("fc-match")
+        .args(["-f", "%{file}", pattern])
+        .output()
+        .ok()?;
+    let path = String::from_utf8_lossy(&out.stdout).to_string();
+    std::fs::read(path.trim()).ok()
+}
+
+pub fn install(ctx: &egui::Context) {
+    let mut fonts = FontDefinitions::default();
+    let mut add = |name: &str, pattern: &str, family: FontFamily, first: bool| {
+        if let Some(bytes) = font_file(pattern) {
+            fonts
+                .font_data
+                .insert(name.to_owned(), Arc::new(FontData::from_owned(bytes)));
+            let list = fonts.families.entry(family).or_default();
+            if first {
+                list.insert(0, name.to_owned())
+            } else {
+                list.push(name.to_owned())
+            }
+        }
+    };
+    add("ui", "Noto Sans:weight=80", FontFamily::Proportional, true);
+    add(
+        "mono",
+        "JetBrainsMono Nerd Font:style=Medium",
+        FontFamily::Monospace,
+        true,
+    );
+    // Icons come from the Nerd Font, as a fallback behind the UI face.
+    add(
+        "icons",
+        "JetBrainsMono Nerd Font",
+        FontFamily::Proportional,
+        false,
+    );
+    add(
+        "ui-strong",
+        "Noto Sans:weight=200",
+        FontFamily::Name("strong".into()),
+        true,
+    );
+    fonts
+        .families
+        .entry(FontFamily::Name("strong".into()))
+        .or_default()
+        .extend(["icons".to_owned()]);
+    ctx.set_fonts(fonts);
+
+    ctx.all_styles_mut(|style| {
+        style.text_styles = [
+            (TextStyle::Small, FontId::proportional(11.5)),
+            (TextStyle::Body, FontId::proportional(14.0)),
+            (TextStyle::Button, FontId::proportional(13.5)),
+            (
+                TextStyle::Heading,
+                FontId::new(20.0, FontFamily::Name("strong".into())),
+            ),
+            (TextStyle::Monospace, FontId::monospace(13.0)),
+        ]
+        .into();
+        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+        style.spacing.button_padding = egui::vec2(12.0, 6.0);
+        style.spacing.interact_size.y = 30.0;
+        style.spacing.menu_margin = Margin::same(8);
+        style.interaction.selectable_labels = false;
+
+        let mut v = Visuals::dark();
+        v.panel_fill = PANEL;
+        v.window_fill = CARD;
+        v.extreme_bg_color = BG;
+        v.faint_bg_color = CARD;
+        v.override_text_color = Some(TEXT);
+        v.hyperlink_color = ACCENT;
+        v.selection.bg_fill = ACCENT.gamma_multiply(0.35);
+        v.selection.stroke = Stroke::new(1.0, ACCENT);
+        v.window_stroke = Stroke::new(1.0, BORDER);
+        v.window_corner_radius = CornerRadius::same(12);
+        v.menu_corner_radius = CornerRadius::same(10);
+        let r = CornerRadius::same(8);
+        v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, BORDER);
+        v.widgets.noninteractive.corner_radius = r;
+        v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, MUTED);
+        v.widgets.inactive.bg_fill = CARD_HOVER;
+        v.widgets.inactive.weak_bg_fill = CARD_HOVER;
+        v.widgets.inactive.bg_stroke = Stroke::new(1.0, BORDER);
+        v.widgets.inactive.corner_radius = r;
+        v.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT);
+        v.widgets.hovered.bg_fill = Color32::from_rgb(0x2a, 0x30, 0x3b);
+        v.widgets.hovered.weak_bg_fill = Color32::from_rgb(0x2a, 0x30, 0x3b);
+        v.widgets.hovered.bg_stroke = Stroke::new(1.0, Color32::from_rgb(0x3a, 0x42, 0x50));
+        v.widgets.hovered.corner_radius = r;
+        v.widgets.hovered.expansion = 0.0;
+        v.widgets.active.bg_fill = Color32::from_rgb(0x33, 0x3a, 0x47);
+        v.widgets.active.weak_bg_fill = Color32::from_rgb(0x33, 0x3a, 0x47);
+        v.widgets.active.corner_radius = r;
+        v.widgets.active.expansion = 0.0;
+        v.widgets.open.corner_radius = r;
+        style.visuals = v;
+    });
+
+    // Native wheel feel: a notch is 100 px and egui eases to the summed target;
+    // touchpads arrive as points and stay 1:1.
+    ctx.options_mut(|o| o.input_options.line_scroll_speed = 100.0);
+}

@@ -3009,6 +3009,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "eframe",
+ "png",
  "rfd",
  "serde",
  "serde_json",
