@@ -437,44 +437,14 @@ pub fn show(
         });
         let a = if dim { 0.25 } else { 1.0 };
         let tagged = !n.tags.is_empty();
-        let ring = if n.is_self {
-            ACCENT
-        } else if tagged {
-            PURPLE
-        } else {
-            Color32::from_rgb(0x55, 0x5f, 0x70)
-        };
-        let fill = if n.is_self {
-            Color32::from_rgb(0x16, 0x2a, 0x4d)
-        } else {
-            CARD_HOVER
-        };
+        let badge = Badge::of(n);
+        let online = badge.online;
         if selected.as_deref() == Some(&n.stable_id) || st.hovered.as_deref() == Some(&n.stable_id)
         {
-            painter.circle_filled(p, r + 9.0, ring.gamma_multiply(0.18 * a));
+            let halo = if online { GREEN } else { MUTED };
+            painter.circle_filled(p, r + 11.0, halo.gamma_multiply(0.14 * a));
         }
-        if tagged {
-            let rr = Rect::from_center_size(p, Vec2::splat(r * 1.8));
-            painter.rect_filled(rr, 8.0, fill.gamma_multiply(a));
-            painter.rect_stroke(
-                rr,
-                8.0,
-                Stroke::new(2.0, ring.gamma_multiply(a)),
-                egui::StrokeKind::Inside,
-            );
-        } else {
-            painter.circle_filled(p, r, fill.gamma_multiply(a));
-            painter.circle_stroke(p, r, Stroke::new(2.0, ring.gamma_multiply(a)));
-        }
-        paint_icon(&painter, p, os_icon(&n.os), r * 0.9, TEXT.gamma_multiply(a));
-        // Online dot.
-        let dot = p + vec2(r * 0.72, -r * 0.72);
-        painter.circle_filled(dot, 5.0, BG);
-        painter.circle_filled(
-            dot,
-            3.6,
-            if n.online { GREEN } else { FAINT }.gamma_multiply(a),
-        );
+        paint_badge(&painter, p, r, os_icon(&n.os), badge, a);
         let label = if n.is_self {
             format!("{} (you)", n.name)
         } else {
@@ -620,23 +590,24 @@ fn legend(painter: &egui::Painter, rect: Rect) {
         "inferred from policy pattern",
     );
     y += 22.0;
-    let c = pos2(x + 8.0, y);
-    painter.rect_filled(
-        Rect::from_center_size(c, Vec2::splat(14.0)),
-        3.0,
-        CARD_HOVER,
+    let mini = |c: Pos2, b: Badge| paint_badge(painter, c, 7.0, "", b, 1.0);
+    let plain = Badge {
+        online: true,
+        me: false,
+        tagged: false,
+    };
+    mini(pos2(x + 8.0, y), plain);
+    mini(
+        pos2(x + 30.0, y),
+        Badge {
+            online: false,
+            ..plain
+        },
     );
-    painter.rect_stroke(
-        Rect::from_center_size(c, Vec2::splat(14.0)),
-        3.0,
-        Stroke::new(1.5, PURPLE),
-        egui::StrokeKind::Inside,
-    );
-    painter.circle_stroke(pos2(x + 30.0, y), 7.0, Stroke::new(1.5, ACCENT));
     painter.text(
         pos2(x + 50.0, y),
         Align2::LEFT_CENTER,
-        "tagged device, this device",
+        "online, offline; tagged devices are square",
         FontId::proportional(12.0),
         MUTED,
     );
