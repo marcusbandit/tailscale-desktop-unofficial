@@ -69,11 +69,14 @@ const SCENES: [Scene; 5] = [
     },
 ];
 
-/// Which screen is playing and when it started. `TSDU_SCENE=<n>` pins one screen
-/// at its last click, for captures.
+/// Which screen is playing and when it started. `TSDU_SCENE=<n>` pins screen n,
+/// counted from 1 like the written steps, at its last click, for captures.
 pub struct Replay {
     scene: usize,
     t0: Option<f64>,
+    /// The last frame drawn, so time spent away from the page or unfocused is
+    /// skipped and the replay resumes where it was.
+    last: f64,
     pinned: bool,
 }
 
@@ -83,8 +86,9 @@ impl Default for Replay {
             .ok()
             .and_then(|v| v.parse::<usize>().ok());
         Self {
-            scene: pin.unwrap_or(0).min(SCENES.len() - 1),
+            scene: pin.unwrap_or(1).clamp(1, SCENES.len()) - 1,
             t0: None,
+            last: 0.0,
             pinned: pin.is_some(),
         }
     }
@@ -111,9 +115,15 @@ fn ease(x: f32) -> f32 {
 }
 
 pub fn show(ui: &mut Ui, r: &mut Replay) {
-    let now = ui.input(|i| i.time);
-    let t0 = *r.t0.get_or_insert(now);
-    let mut t = (now - t0) as f32;
+    let (now, focused) = ui.input(|i| (i.time, i.focused));
+    let gap = if r.t0.is_some() { now - r.last } else { 0.0 };
+    r.last = now;
+    // Away from the page or out of focus, the replay waits instead of running on.
+    let t0 = r.t0.get_or_insert(now);
+    if gap > 0.25 || !focused {
+        *t0 += gap;
+    }
+    let mut t = (now - *t0) as f32;
     if r.pinned {
         let n = SCENES[r.scene].clicks;
         t = LEAD + (n - 1) as f32 * CLICK + GLIDE + PRESS * 0.6;
@@ -122,12 +132,12 @@ pub fn show(ui: &mut Ui, r: &mut Replay) {
         r.t0 = Some(now);
         t = 0.0;
     }
-    let scene = &SCENES[r.scene];
-
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), HEIGHT), Sense::hover());
-    window(ui, rect, scene, r.scene, t);
-    if !r.pinned {
-        ui.ctx().request_repaint();
+    window(ui, rect, r.scene, t);
+    // About 30 frames a second is plenty for a cursor, and nothing while unfocused.
+    if !r.pinned && focused {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(33));
     }
 
     ui.add_space(12.0);
@@ -210,7 +220,8 @@ fn arc(p: &egui::Painter, c: Pos2, r: f32, f: f32, s: Stroke) {
 
 /// The browser window: an address bar showing the page the user should be on,
 /// the console page, and the cursor working through it.
-fn window(ui: &Ui, rect: Rect, scene: &Scene, idx: usize, t: f32) {
+fn window(ui: &Ui, rect: Rect, idx: usize, t: f32) {
+    let scene = &SCENES[idx];
     let outer = ui.painter_at(rect.expand(2.0));
     let round = 10u8;
     outer.rect_filled(rect, round, PAGE);
@@ -255,12 +266,17 @@ fn window(ui: &Ui, rect: Rect, scene: &Scene, idx: usize, t: f32) {
     sidebar(&m, round);
     let targets = match idx {
         0 => list_page(&m, done),
-        1 => add_page(&m),
-        2 => scopes_page(&m, 0.0, done, false),
-        3 => scopes_page(&m, -SCROLL * ease(t / LEAD), 3, true),
+        1 => add_page(&m, done),
+        2 => scopes_page(&m, 0.0, done, None),
+        3 => scopes_page(&m, -SCROLL * ease(t / LEAD), 3, Some(done)),
         _ => {
-            scopes_page(&m, -SCROLL, 3, true);
-            p.rect_filled(page, 0.0, Color32::from_black_alpha(150));
+            scopes_page(&m, -SCROLL, 3, Some(0));
+            let bottom = CornerRadius {
+                sw: round,
+                se: round,
+                ..Default::default()
+            };
+            p.rect_filled(page, bottom, Color32::from_black_alpha(150));
             created_modal(&m, done)
         }
     };
@@ -341,6 +357,12 @@ impl Mini<'_> {
             if primary { Color32::WHITE } else { INK },
         );
         r
+    }
+    /// Darkens a button once the cursor has pressed it.
+    fn pressed(&self, r: Rect, on: bool) {
+        if on {
+            self.p.rect_filled(r, 4.0, Color32::from_black_alpha(60));
+        }
     }
     fn chevron(&self, x: f32, y: f32, open: bool) {
         let s = Stroke::new(1.2, DIM);
@@ -460,9 +482,7 @@ fn list_page(m: &Mini, done: usize) -> Vec<Pos2> {
         "+  Credential",
         true,
     );
-    if done > 0 {
-        m.p.rect_filled(b, 4.0, Color32::from_black_alpha(50));
-    }
+    m.pressed(b, done > 0);
     let t = m.rect(x, 90.0, w, 52.0);
     m.p.rect_stroke(t, 5.0, Stroke::new(1.0, LINE), StrokeKind::Inside);
     for (dx, s) in [
@@ -484,7 +504,7 @@ fn list_page(m: &Mini, done: usize) -> Vec<Pos2> {
 }
 
 /// New credential, step one: OAuth or OpenID Connect, then Continue.
-fn add_page(m: &Mini) -> Vec<Pos2> {
+fn add_page(m: &Mini, done: usize) -> Vec<Pos2> {
     let (x, w) = m.col();
     let w = w.min(330.0);
     let crumb = m.text(x, 10.0, "Trust credentials", 8.5, LINK);
@@ -524,6 +544,7 @@ fn add_page(m: &Mini) -> Vec<Pos2> {
     m.text(x, 128.0, "Description (optional)", 8.5, INK);
     m.field(m.rect(x, 142.0, w, 20.0));
     let b = m.button(m.rect(x + w - 66.0, 174.0, 66.0, 20.0), "Continue", true);
+    m.pressed(b, done > 0);
     vec![b.center()]
 }
 
@@ -560,7 +581,8 @@ fn stepper(m: &Mini, x: f32, y: f32, at: usize) {
 
 /// New credential, step two. `done` counts the clicks so far: Devices opened,
 /// then Read on Core, then Read on Posture attributes. `dy` scrolls the page.
-fn scopes_page(m: &Mini, dy: f32, done: usize, generate: bool) -> Vec<Pos2> {
+/// `generate` makes Generate credential the target, with the clicks landed on it.
+fn scopes_page(m: &Mini, dy: f32, done: usize, generate: Option<usize>) -> Vec<Pos2> {
     let (x, w) = m.col();
     let y = |v: f32| v + dy;
     m.bold(x, y(10.0), "New credential", 15.0, INK);
@@ -638,7 +660,8 @@ fn scopes_page(m: &Mini, dy: f32, done: usize, generate: bool) -> Vec<Pos2> {
         "Generate credential",
         true,
     );
-    if generate {
+    if let Some(pressed) = generate {
+        m.pressed(g, pressed > 0);
         return vec![g.center()];
     }
     targets
