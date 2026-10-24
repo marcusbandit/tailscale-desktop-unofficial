@@ -23,6 +23,15 @@ Your user should be the Tailscale operator so changes work without root:
 
 If it is not, the on/off switch falls back to asking for root through polkit or a terminal running sudo.
 
+## OS versions
+
+tailscaled knows this device's distro and kernel, but peers only report their OS family. For
+the rest the app asks the Tailscale API. Press Connect in the sidebar, create an OAuth client
+with read access to Devices Core and Device posture, and paste its secret. It is kept in the
+desktop keyring through `secret-tool` and can't change anything on the tailnet. The API gives
+the distro, the kernel on Linux, and the OS version on Android, Windows, macOS and iOS. Results
+are cached in `~/.cache/tailscale-desktop-unofficial/os.json` and refresh every 15 minutes.
+
 ## How the access graph knows
 
 A device only receives the packet filter for its own inbound traffic, so the graph combines:
@@ -37,5 +46,5 @@ A device only receives the packet filter for its own inbound traffic, so the gra
 
 `TSDU_SHOT=out.png` renders for `TSDU_DELAY` seconds (default 6), writes a PNG of the window and
 quits. `TSDU_VIEW=graph|taildrop` picks the view, `TSDU_SELECT=<device>` opens a device, and
-`TSDU_PING=1` pings it first. `TSDU_PAN_AT=<seconds>` throws the graph camera off screen
+`TSDU_PING=1` pings it first. `TSDU_CONNECT=1` opens the API connect dialog. `TSDU_PAN_AT=<seconds>` throws the graph camera off screen
 at that moment to test that it returns.
