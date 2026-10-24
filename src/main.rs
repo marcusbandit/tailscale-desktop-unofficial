@@ -1,6 +1,7 @@
 mod access;
 mod app;
 mod graph;
+mod osinfo;
 mod shot;
 mod theme;
 mod ts;

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -15,6 +15,7 @@ use serde_json::json;
 
 use crate::access::{self, Access, Probes, Source};
 use crate::graph::{self, GraphState};
+use crate::osinfo::{self, OsInfo};
 use crate::theme::{icon, *};
 use crate::ts::{self, Node, Pong, Snapshot};
 
@@ -24,6 +25,14 @@ enum Msg {
     Ping(String, Result<Pong, String>),
     PingDone(String),
     Done(String, Result<String, String>),
+    /// This device's own Hostinfo.
+    OsLocal(OsInfo),
+    /// The API's view of every device; `None` when no credential is stored.
+    /// Tagged with the epoch it was fetched in, so a reply that started before a
+    /// disconnect or a new connect is dropped.
+    OsApi(u64, Option<Result<HashMap<String, OsInfo>, String>>),
+    /// A connect attempt checked its credential: (attempt, secret and devices).
+    Verified(u64, Result<(String, HashMap<String, OsInfo>), String>),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -71,6 +80,30 @@ pub struct App {
     shot: Option<crate::shot::Shot>,
     pending_ping: Option<Node>,
     failures: u32,
+    os_local: Option<OsInfo>,
+    os_api: HashMap<String, OsInfo>,
+    /// Both of the above, merged, keyed by stable node id.
+    os: HashMap<String, OsInfo>,
+    api: ApiState,
+    os_wake: Sender<()>,
+    os_epoch: Arc<AtomicU64>,
+    connect: Option<ConnectDialog>,
+    /// Bumped by every connect attempt and every cancel, so a check that comes
+    /// back after the dialog closed is ignored.
+    connect_attempt: u64,
+}
+
+#[derive(Default)]
+struct ApiState {
+    connected: bool,
+    error: Option<String>,
+}
+
+#[derive(Default)]
+struct ConnectDialog {
+    secret: String,
+    error: Option<String>,
+    busy: bool,
 }
 
 impl App {
@@ -79,6 +112,35 @@ impl App {
         let (tx, rx) = mpsc::channel();
         let (wake, wake_rx) = mpsc::channel();
         spawn_worker(tx.clone(), wake_rx, cc.egui_ctx.clone());
+        let (os_wake, os_wake_rx) = mpsc::channel();
+        let os_epoch = Arc::new(AtomicU64::new(0));
+        spawn_os_worker(
+            tx.clone(),
+            os_wake_rx,
+            os_epoch.clone(),
+            cc.egui_ctx.clone(),
+        );
+        // Cached versions only count while a credential is stored.
+        let (api, os_api) = match osinfo::load_secret() {
+            Ok(Some(_)) => (
+                ApiState {
+                    connected: true,
+                    error: None,
+                },
+                osinfo::load_cache(),
+            ),
+            Ok(None) => {
+                osinfo::clear_cache();
+                (ApiState::default(), HashMap::new())
+            }
+            Err(e) => (
+                ApiState {
+                    connected: true,
+                    error: Some(e),
+                },
+                osinfo::load_cache(),
+            ),
+        };
         Self {
             tx,
             rx,
@@ -98,6 +160,16 @@ impl App {
             shot: crate::shot::Shot::from_env(),
             pending_ping: None,
             failures: 0,
+            os_local: None,
+            os: os_api.clone(),
+            api,
+            os_api,
+            os_wake,
+            os_epoch,
+            connect_attempt: 0,
+            connect: std::env::var("TSDU_CONNECT")
+                .is_ok()
+                .then(ConnectDialog::default),
         }
         .with_env()
     }
@@ -189,9 +261,13 @@ impl App {
                             }
                         }
                     }
+                    let first = self.snap.is_none();
                     self.snap = Some(s);
                     self.error = None;
                     self.rebuild();
+                    if first {
+                        self.merge_os();
+                    }
                 }
                 Msg::Snapshot(Err(e)) => {
                     self.error = Some(e);
@@ -218,12 +294,118 @@ impl App {
                     }
                     self.wake.send(false).ok();
                 }
+                Msg::OsLocal(info) => {
+                    self.os_local = Some(info);
+                    self.merge_os();
+                }
+                Msg::OsApi(epoch, _) if epoch != self.os_epoch.load(Ordering::SeqCst) => {}
+                Msg::OsApi(_, None) => {
+                    osinfo::clear_cache();
+                    self.api = ApiState::default();
+                    self.os_api.clear();
+                    self.merge_os();
+                }
+                Msg::OsApi(_, Some(Ok(map))) => self.apply_os(map),
+                Msg::OsApi(_, Some(Err(e))) => {
+                    // Keep showing the last good versions; say what went wrong.
+                    self.api.connected = true;
+                    self.api.error = Some(e);
+                }
+                Msg::Verified(attempt, _) if attempt != self.connect_attempt => {}
+                Msg::Verified(_, r) => {
+                    let r = r.and_then(|(secret, map)| {
+                        osinfo::store_secret(&secret)?;
+                        Ok(map)
+                    });
+                    match r {
+                        Ok(map) => {
+                            // Anything the worker had in flight predates this credential.
+                            self.os_epoch.fetch_add(1, Ordering::SeqCst);
+                            self.apply_os(map);
+                            self.connect = None;
+                            self.toast("Connected. OS versions are on.", false);
+                        }
+                        Err(e) => {
+                            if let Some(d) = &mut self.connect {
+                                d.busy = false;
+                                d.error = Some(e);
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 
+    fn apply_os(&mut self, map: HashMap<String, OsInfo>) {
+        self.api = ApiState {
+            connected: true,
+            error: None,
+        };
+        osinfo::save_cache(&map);
+        self.os_api = map;
+        self.merge_os();
+    }
+
+    fn merge_os(&mut self) {
+        let me = self.snap.as_ref().map(|s| s.me.stable_id.clone());
+        let local = me.as_deref().zip(self.os_local.as_ref());
+        self.os = osinfo::combine(&self.os_api, local);
+    }
+
+    /// What is known about a device's system, at least the OS family.
+    fn os_of(&self, n: &Node) -> OsInfo {
+        self.os
+            .get(&n.stable_id)
+            .cloned()
+            .unwrap_or_else(|| OsInfo {
+                os: n.os.clone(),
+                ..Default::default()
+            })
+    }
+
+    fn start_connect(&mut self, ctx: &egui::Context) {
+        let Some(d) = &mut self.connect else {
+            return;
+        };
+        d.busy = true;
+        d.error = None;
+        self.connect_attempt += 1;
+        let attempt = self.connect_attempt;
+        let secret = d.secret.trim().to_owned();
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        thread::spawn(move || {
+            // Prove the credential works; the UI keeps it only if the dialog is
+            // still waiting for this attempt.
+            let r = osinfo::Api::new(secret.clone())
+                .fetch()
+                .map(|map| (secret, map));
+            tx.send(Msg::Verified(attempt, r)).ok();
+            ctx.request_repaint();
+        });
+    }
+
     fn rebuild(&mut self) {
         self.matrix = self.snap.as_ref().map(|s| access::build(s, &self.probes));
+    }
+
+    fn cancel_connect(&mut self) {
+        self.connect = None;
+        self.connect_attempt += 1;
+    }
+
+    fn disconnect(&mut self) {
+        self.os_epoch.fetch_add(1, Ordering::SeqCst);
+        osinfo::clear_secret();
+        osinfo::clear_cache();
+        self.api = ApiState::default();
+        self.os_api.clear();
+        self.merge_os();
+        self.os_wake.send(()).ok();
+        self.toast(
+            "Disconnected. The credential is gone from the keyring.",
+            false,
+        );
     }
 }
 
@@ -297,6 +479,42 @@ fn spawn_worker(tx: Sender<Msg>, wake: Receiver<bool>, ctx: egui::Context) {
                     last_filter_try = long_ago;
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(_) => return,
+            }
+        }
+    });
+}
+
+/// Reads this device's Hostinfo once, then asks the Tailscale API about every
+/// device every 15 minutes while a credential is stored.
+fn spawn_os_worker(tx: Sender<Msg>, wake: Receiver<()>, epoch: Arc<AtomicU64>, ctx: egui::Context) {
+    thread::spawn(move || {
+        if let Some(info) = osinfo::local() {
+            tx.send(Msg::OsLocal(info)).ok();
+            ctx.request_repaint();
+        }
+        let mut api: Option<(String, osinfo::Api)> = None;
+        loop {
+            let started = epoch.load(Ordering::SeqCst);
+            let msg = match osinfo::load_secret() {
+                Ok(None) => {
+                    api = None;
+                    None
+                }
+                Err(e) => Some(Err(e)),
+                Ok(Some(secret)) => {
+                    if api.as_ref().is_none_or(|(s, _)| *s != secret) {
+                        api = Some((secret.clone(), osinfo::Api::new(secret)));
+                    }
+                    Some(api.as_mut().unwrap().1.fetch())
+                }
+            };
+            if tx.send(Msg::OsApi(started, msg)).is_err() {
+                return;
+            }
+            ctx.request_repaint();
+            match wake.recv_timeout(Duration::from_secs(15 * 60)) {
+                Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(_) => return,
             }
         }
@@ -385,6 +603,26 @@ fn primary_button(ui: &mut Ui, text: &str) -> egui::Response {
             .stroke(Stroke::NONE)
             .min_size(vec2(0.0, 30.0)),
     )
+}
+
+/// One numbered step in a short how-to, with room for a control under the text.
+fn step(ui: &mut Ui, n: &str, text: &str, add: impl FnOnce(&mut Ui)) {
+    ui.horizontal_top(|ui| {
+        let (r, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
+        ui.painter().circle_filled(r.center(), 11.0, CARD_HOVER);
+        ui.painter().text(
+            r.center(),
+            Align2::CENTER_CENTER,
+            n,
+            FontId::proportional(12.0),
+            TEXT,
+        );
+        ui.vertical(|ui| {
+            ui.add_space(2.0);
+            ui.label(text);
+            add(ui);
+        });
+    });
 }
 
 fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
@@ -551,6 +789,7 @@ impl eframe::App for App {
                 }
             });
 
+        self.connect_dialog(&ctx);
         self.draw_toasts(&ctx);
         if let Some(n) = self.pending_ping.take() {
             self.ping(&ctx, &n);
@@ -821,6 +1060,41 @@ impl App {
             });
         }
 
+        ui.add_space(14.0);
+        section_title(ui, "OS versions");
+        ui.add_space(4.0);
+        if self.api.connected {
+            ui.horizontal(|ui| {
+                let (text, col) = match &self.api.error {
+                    None => ("On for every device", GREEN),
+                    Some(_) => ("Could not refresh", AMBER),
+                };
+                ui.label(RichText::new(text).size(12.5).color(col));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui
+                        .small_button("Disconnect")
+                        .on_hover_text("Remove the API credential from the keyring")
+                        .clicked()
+                    {
+                        self.disconnect();
+                    }
+                });
+            });
+            if let Some(e) = &self.api.error {
+                ui.label(RichText::new(e).size(11.5).color(FAINT));
+            }
+        } else {
+            ui.label(
+                RichText::new("Only this device's is known until you connect the Tailscale API.")
+                    .size(11.5)
+                    .color(FAINT),
+            );
+            ui.add_space(4.0);
+            if ui.button("Connect").clicked() {
+                self.connect = Some(ConnectDialog::default());
+            }
+        }
+
         ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
             let me = s.me.clone();
             ui.label(
@@ -1047,12 +1321,17 @@ impl App {
                 }
             });
             ui.horizontal(|ui| {
-                if n.tags.is_empty() {
+                for t in &n.tags {
+                    chip(ui, format!("{} {t}", icon::TAG), PURPLE);
+                }
+                // The owner only earns room when it is someone else.
+                if n.tags.is_empty() && n.user_login != s.me.user_login {
                     ui.label(RichText::new(&n.user_login).size(12.0).color(MUTED));
-                } else {
-                    for t in &n.tags {
-                        chip(ui, format!("{} {t}", icon::TAG), PURPLE);
-                    }
+                }
+                let os = self.os_of(n);
+                ui.label(RichText::new(os.title()).size(12.0).color(MUTED));
+                if let Some(d) = os.detail() {
+                    ui.label(RichText::new(d).size(12.0).color(FAINT));
                 }
             });
         });
@@ -1325,12 +1604,27 @@ impl App {
                 section_title(ui, "Details");
                 ui.add_space(4.0);
                 let (conn, col) = connection(&n);
+                let os = self.os_of(&n);
                 let mut rows: Vec<(&str, String, Color32)> = vec![
                     ("Connection", conn, col),
-                    ("OS", n.os.clone(), TEXT),
+                    ("System", os.title(), TEXT),
+                ];
+                if let Some((key, v)) = os.detail_row() {
+                    rows.push((key, v, TEXT));
+                }
+                if !os.arch.is_empty() {
+                    rows.push(("Architecture", os.arch.clone(), TEXT));
+                }
+                if !n.is_self && !os.client_version.is_empty() {
+                    rows.push(("Tailscale", os.client_version.clone(), TEXT));
+                }
+                if os.update_available {
+                    rows.push(("Update", "a newer Tailscale is available".into(), AMBER));
+                }
+                rows.extend([
                     ("Hostname", n.hostname.clone(), TEXT),
                     ("Owner", if n.tags.is_empty() { n.user_display.clone() } else { "tagged device".into() }, TEXT),
-                ];
+                ]);
                 if !n.cur_addr.is_empty() {
                     rows.push(("Endpoint", n.cur_addr.clone(), TEXT));
                 }
@@ -1355,6 +1649,15 @@ impl App {
                         ui.end_row();
                     }
                 });
+                if !n.is_self && !self.api.connected {
+                    ui.add_space(8.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new("Tailscale shares other devices' OS versions only through its API.").size(11.5).color(FAINT));
+                        if ui.link(RichText::new("Connect to see them").size(11.5)).clicked() {
+                            self.connect = Some(ConnectDialog::default());
+                        }
+                    });
+                }
             });
         });
     }
@@ -1417,6 +1720,90 @@ impl App {
                 ui.add_space(6.0);
             }
         });
+    }
+
+    fn connect_dialog(&mut self, ctx: &egui::Context) {
+        if self.connect.is_none() {
+            return;
+        }
+        let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        let mut go = false;
+        egui::Modal::new(egui::Id::new("connect"))
+            .frame(
+                Frame::new()
+                    .fill(PANEL)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .corner_radius(CornerRadius::same(14))
+                    .inner_margin(Margin::same(22)),
+            )
+            .show(ctx, |ui| {
+                let d = self.connect.as_mut().unwrap();
+                ui.set_width(440.0);
+                ui.spacing_mut().item_spacing.y = 8.0;
+                ui.label(RichText::new("See every device's OS version").heading());
+                ui.label(
+                    RichText::new(
+                        "Tailscale shares distro, kernel and OS versions only through its API. \
+                         Make a read-only credential once and paste it here. \
+                         It stays in your keyring and can't change anything on your tailnet.",
+                    )
+                    .color(MUTED),
+                );
+                ui.add_space(6.0);
+                step(ui, "1", "Open the Tailscale admin console.", |ui| {
+                    if ui.button(format!("{}   Open admin console", icon::GLOBE)).clicked() {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(osinfo::CONSOLE_URL));
+                    }
+                });
+                step(ui, "2", "Create an OAuth client. Give it Read on Devices Core and on Device posture, nothing else.", |_| {});
+                step(ui, "3", "Paste the client secret.", |ui| {
+                    let edit = ui.add(
+                        egui::TextEdit::singleline(&mut d.secret)
+                            .password(true)
+                            .hint_text("tskey-client-...")
+                            .desired_width(f32::INFINITY),
+                    );
+                    if edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        go = true;
+                    }
+                });
+                let valid = osinfo::client_id(&d.secret).is_some();
+                if !d.secret.trim().is_empty() && !valid {
+                    ui.label(
+                        RichText::new("A client secret starts with tskey-client-.")
+                            .size(12.0)
+                            .color(AMBER),
+                    );
+                }
+                if let Some(e) = &d.error {
+                    ui.label(RichText::new(e).size(12.0).color(RED));
+                }
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let label = if d.busy { "Checking" } else { "Connect" };
+                        if ui
+                            .add_enabled_ui(valid && !d.busy, |ui| primary_button(ui, label))
+                            .inner
+                            .clicked()
+                        {
+                            go = true;
+                        }
+                        if d.busy {
+                            ui.spinner();
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+                go &= valid && !d.busy;
+            });
+        if go {
+            self.start_connect(ctx);
+        } else if close {
+            self.cancel_connect();
+        }
     }
 
     fn draw_toasts(&mut self, ctx: &egui::Context) {
