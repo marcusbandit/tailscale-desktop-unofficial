@@ -45,8 +45,6 @@ pub mod icon {
     pub const INBOX: &str = "\u{f01c}";
     pub const CLOSE: &str = "\u{f00d}";
     pub const TRASH: &str = "\u{f1f8}";
-    pub const ARROW_RIGHT: &str = "\u{f061}";
-    pub const ARROW_LEFT: &str = "\u{f060}";
     pub const BAN: &str = "\u{f05e}";
     pub const CHECK: &str = "\u{f00c}";
 }
@@ -86,6 +84,64 @@ pub fn paint_icon(
         g.rect.center()
     };
     painter.galley(center - mid.to_vec2(), g, color);
+}
+
+/// How a device badge looks: its status sets the ring, the rest sets fill and shape.
+#[derive(Clone, Copy)]
+pub struct Badge {
+    pub online: bool,
+    pub me: bool,
+    pub tagged: bool,
+}
+
+pub const RING_OFF: Color32 = Color32::from_rgb(0x3a, 0x41, 0x4d);
+pub const ME_FILL: Color32 = Color32::from_rgb(0x16, 0x2a, 0x4d);
+
+/// A device everywhere in the app: its OS glyph inside a ring that is green while
+/// the device is online and grey when it is not. Tagged devices are squares.
+pub fn paint_badge(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    r: f32,
+    glyph: &str,
+    b: Badge,
+    alpha: f32,
+) {
+    let ring = if b.online { GREEN } else { RING_OFF };
+    let fill = if b.me { ME_FILL } else { CARD_HOVER };
+    let width = (r * 0.11).clamp(1.5, 3.0);
+    let shape = |rect_r: f32, f: Color32, s: Stroke| {
+        if b.tagged {
+            let rr = egui::Rect::from_center_size(center, egui::Vec2::splat(rect_r * 1.8));
+            let corner = rect_r * 0.4;
+            painter.rect_filled(rr, corner, f);
+            painter.rect_stroke(rr, corner, s, egui::StrokeKind::Middle);
+        } else {
+            painter.circle_filled(center, rect_r, f);
+            painter.circle_stroke(center, rect_r, s);
+        }
+    };
+    if b.online {
+        // A soft outer glow makes "online" readable at a glance, even small.
+        shape(
+            r + width * 1.8,
+            Color32::TRANSPARENT,
+            Stroke::new(width * 2.2, GREEN.gamma_multiply(0.14 * alpha)),
+        );
+    }
+    shape(
+        r,
+        fill.gamma_multiply(alpha),
+        Stroke::new(width, ring.gamma_multiply(alpha)),
+    );
+    let icon_col = if b.online { TEXT } else { MUTED };
+    paint_icon(
+        painter,
+        center,
+        glyph,
+        r * 0.9,
+        icon_col.gamma_multiply(alpha),
+    );
 }
 
 fn font_file(pattern: &str) -> Option<Vec<u8>> {

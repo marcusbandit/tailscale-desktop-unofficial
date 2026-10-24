@@ -19,6 +19,8 @@ use crate::osinfo::{self, OsInfo};
 use crate::theme::{icon, *};
 use crate::ts::{self, Node, Pong, Snapshot};
 
+mod onboard;
+
 enum Msg {
     Snapshot(Result<Snapshot, String>),
     Probes(Probes),
@@ -87,7 +89,8 @@ pub struct App {
     api: ApiState,
     os_wake: Sender<()>,
     os_epoch: Arc<AtomicU64>,
-    connect: Option<ConnectDialog>,
+    /// First-run walkthrough; while open it takes the whole window.
+    onboard: Option<Onboarding>,
     /// Bumped by every connect attempt and every cancel, so a check that comes
     /// back after the dialog closed is ignored.
     connect_attempt: u64,
@@ -100,10 +103,22 @@ struct ApiState {
 }
 
 #[derive(Default)]
-struct ConnectDialog {
+struct Onboarding {
+    step: usize,
     secret: String,
     error: Option<String>,
     busy: bool,
+    /// Set once a credential checked out during this walkthrough.
+    connected: bool,
+}
+
+impl Onboarding {
+    fn at(step: usize) -> Self {
+        Self {
+            step,
+            ..Default::default()
+        }
+    }
 }
 
 impl App {
@@ -167,9 +182,7 @@ impl App {
             os_wake,
             os_epoch,
             connect_attempt: 0,
-            connect: std::env::var("TSDU_CONNECT")
-                .is_ok()
-                .then(ConnectDialog::default),
+            onboard: onboard::first_step().map(Onboarding::at),
         }
         .with_env()
     }
@@ -322,11 +335,16 @@ impl App {
                             // Anything the worker had in flight predates this credential.
                             self.os_epoch.fetch_add(1, Ordering::SeqCst);
                             self.apply_os(map);
-                            self.connect = None;
-                            self.toast("Connected. OS versions are on.", false);
+                            match &mut self.onboard {
+                                Some(o) => {
+                                    o.busy = false;
+                                    o.connected = true;
+                                }
+                                None => self.toast("Connected. OS versions are on.", false),
+                            }
                         }
                         Err(e) => {
-                            if let Some(d) = &mut self.connect {
+                            if let Some(d) = &mut self.onboard {
                                 d.busy = false;
                                 d.error = Some(e);
                             }
@@ -365,7 +383,7 @@ impl App {
     }
 
     fn start_connect(&mut self, ctx: &egui::Context) {
-        let Some(d) = &mut self.connect else {
+        let Some(d) = &mut self.onboard else {
             return;
         };
         d.busy = true;
@@ -389,9 +407,11 @@ impl App {
         self.matrix = self.snap.as_ref().map(|s| access::build(s, &self.probes));
     }
 
-    fn cancel_connect(&mut self) {
-        self.connect = None;
+    /// Leaves the walkthrough; a check still running is ignored when it returns.
+    fn close_onboarding(&mut self) {
+        self.onboard = None;
         self.connect_attempt += 1;
+        onboard::mark_done();
     }
 
     fn disconnect(&mut self) {
@@ -639,12 +659,7 @@ fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 }
 
 fn section_title(ui: &mut Ui, text: &str) {
-    ui.label(
-        RichText::new(text.to_uppercase())
-            .size(11.0)
-            .color(MUTED)
-            .strong(),
-    );
+    ui.label(RichText::new(text).size(12.5).color(MUTED).strong());
 }
 
 fn ago(t: Option<DateTime<Utc>>) -> String {
@@ -671,6 +686,14 @@ fn bytes(n: u64) -> String {
         1_048_576..1_073_741_824 => format!("{:.1} MB", f / 1_048_576.0),
         _ => format!("{:.2} GB", f / 1_073_741_824.0),
     }
+}
+
+/// "relay ams" reads "Relay ams" at the start of a line.
+fn sentence(s: &str) -> String {
+    let mut c = s.chars();
+    c.next()
+        .map(|f| f.to_uppercase().chain(c).collect())
+        .unwrap_or_default()
 }
 
 fn connection(n: &Node) -> (String, Color32) {
@@ -701,6 +724,18 @@ impl eframe::App for App {
         self.drain();
         let ctx = ui.ctx().clone();
         self.handle_drops(&ctx);
+
+        if self.onboard.is_some() {
+            egui::CentralPanel::default()
+                .frame(Frame::new().fill(BG))
+                .show(ui, |ui| self.onboarding(ui));
+            self.draw_toasts(&ctx);
+            if let Some(shot) = &mut self.shot {
+                shot.tick(&ctx);
+            }
+            ctx.request_repaint_after(Duration::from_secs(1));
+            return;
+        }
 
         egui::Panel::top("top")
             .frame(
@@ -789,7 +824,6 @@ impl eframe::App for App {
                 }
             });
 
-        self.connect_dialog(&ctx);
         self.draw_toasts(&ctx);
         if let Some(n) = self.pending_ping.take() {
             self.ping(&ctx, &n);
@@ -1090,13 +1124,20 @@ impl App {
                     .color(FAINT),
             );
             ui.add_space(4.0);
-            if ui.button("Connect").clicked() {
-                self.connect = Some(ConnectDialog::default());
+            if ui.button("Set up OS versions").clicked() {
+                self.onboard = Some(Onboarding::at(onboard::OS_STEP));
             }
         }
 
         ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
             let me = s.me.clone();
+            if ui
+                .link(RichText::new("Welcome tour").size(11.5).color(MUTED))
+                .clicked()
+            {
+                self.onboard = Some(Onboarding::at(0));
+            }
+            ui.add_space(2.0);
             ui.label(
                 RichText::new(format!(
                     "tailscaled {}  ·  operator {}",
@@ -1223,42 +1264,49 @@ impl App {
                     if list.is_empty() {
                         continue;
                     }
-                    section_title(ui, &format!("{title}  ·  {}", list.len()));
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(title).size(14.0).strong().color(TEXT));
+                        ui.label(
+                            RichText::new(list.len().to_string())
+                                .size(13.0)
+                                .color(FAINT),
+                        );
+                    });
                     ui.add_space(6.0);
-                    for n in list {
-                        self.device_row(ui, &ctx, &s, n);
-                        ui.add_space(6.0);
-                    }
-                    ui.add_space(12.0);
+                    // One panel per group; rows are divided, not boxed one by one.
+                    Frame::new()
+                        .fill(CARD)
+                        .stroke(Stroke::new(1.0, BORDER))
+                        .corner_radius(CornerRadius::same(12))
+                        .inner_margin(Margin::same(4))
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            let last = list.len() - 1;
+                            for (i, n) in list.into_iter().enumerate() {
+                                self.device_row(ui, &ctx, &s, n);
+                                if i != last {
+                                    let r = ui.available_rect_before_wrap();
+                                    ui.painter().hline(
+                                        r.left() + 64.0..=r.right() - 12.0,
+                                        r.top(),
+                                        Stroke::new(1.0, BORDER),
+                                    );
+                                }
+                            }
+                        });
+                    ui.add_space(18.0);
                 }
             });
     }
 
     fn device_row(&mut self, ui: &mut Ui, ctx: &egui::Context, s: &Snapshot, n: &Node) {
-        let h = 66.0;
+        let h = 64.0;
         let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
         let selected = self.selected.as_deref() == Some(&n.stable_id);
-        let fill = if selected {
-            CARD_SELECTED
-        } else if resp.hovered() {
-            CARD_HOVER
-        } else {
-            CARD
-        };
-        ui.painter().rect_filled(rect, 12.0, fill);
-        ui.painter().rect_stroke(
-            rect,
-            12.0,
-            Stroke::new(
-                1.0,
-                if selected {
-                    ACCENT.gamma_multiply(0.6)
-                } else {
-                    BORDER
-                },
-            ),
-            egui::StrokeKind::Inside,
-        );
+        if selected || resp.hovered() {
+            let fill = if selected { CARD_SELECTED } else { CARD_HOVER };
+            ui.painter().rect_filled(rect, 9.0, fill);
+        }
         if resp.clicked() {
             self.selected = if selected {
                 None
@@ -1267,29 +1315,29 @@ impl App {
             };
         }
 
-        let inner = rect.shrink2(vec2(16.0, 10.0));
-        let p = ui.painter().clone();
-        p.circle_filled(
-            egui::pos2(inner.left() + 5.0, inner.center().y),
-            4.5,
-            if n.online { GREEN } else { FAINT },
-        );
-        paint_icon(
-            &p,
-            egui::pos2(inner.left() + 28.0, inner.center().y),
+        let inner = rect.shrink2(vec2(14.0, 6.0));
+        let dim = !n.online && !n.is_self;
+        paint_badge(
+            ui.painter(),
+            egui::pos2(inner.left() + 18.0, inner.center().y),
+            17.0,
             os_icon(&n.os),
-            18.0,
-            if n.online { TEXT } else { MUTED },
+            Badge {
+                online: n.online || n.is_self,
+                me: n.is_self,
+                tagged: !n.tags.is_empty(),
+            },
+            1.0,
         );
 
         // Fixed columns so every row lines up.
         // Columns drop out from the right as the list gets narrow.
-        let avail = inner.width() - 48.0;
-        let acc_w = if avail >= 720.0 { 84.0 } else { 0.0 };
-        let act_w = if avail >= 640.0 { 130.0 } else { 74.0 };
-        let (ip_w, conn_w) = (155.0, 115.0);
-        let name_w = (avail - ip_w - conn_w - acc_w - act_w).clamp(140.0, 420.0);
-        let mut x = inner.left() + 48.0;
+        let avail = inner.width() - 50.0;
+        let note_w = if avail >= 760.0 { 150.0 } else { 0.0 };
+        let act_w = if avail >= 640.0 { 120.0 } else { 74.0 };
+        let (ip_w, conn_w) = (150.0, 130.0);
+        let name_w = (avail - ip_w - conn_w - note_w - act_w).clamp(150.0, 460.0);
+        let mut x = inner.left() + 50.0;
         let mut col = |w: f32| {
             let r = egui::Rect::from_min_max(
                 egui::pos2(x, inner.top()),
@@ -1298,7 +1346,7 @@ impl App {
             x += w;
             r
         };
-        let (name_r, ip_r, conn_r, acc_r) = (col(name_w), col(ip_w), col(conn_w), col(acc_w));
+        let (name_r, ip_r, conn_r, note_r) = (col(name_w), col(ip_w), col(conn_w), col(note_w));
         let act_r = egui::Rect::from_min_max(egui::pos2(x, inner.top()), inner.max);
         let ui = &mut ui.new_child(UiBuilder::new().max_rect(rect));
         let centered = |r: egui::Rect| {
@@ -1306,11 +1354,19 @@ impl App {
                 .max_rect(r)
                 .layout(Layout::top_down(Align::Min).with_main_align(Align::Center))
         };
+        let in_row = |r: egui::Rect| {
+            UiBuilder::new()
+                .max_rect(r)
+                .layout(Layout::left_to_right(Align::Center))
+        };
 
         ui.scope_builder(centered(name_r), |ui| {
+            // Rows hug their text so the two lines center as one block.
+            ui.spacing_mut().interact_size.y = 0.0;
             ui.spacing_mut().item_spacing.y = 3.0;
             ui.horizontal(|ui| {
-                ui.label(RichText::new(&n.name).strong().size(14.5));
+                let name = RichText::new(&n.name).strong().size(14.5);
+                ui.label(if dim { name.color(MUTED) } else { name });
                 if n.is_self {
                     chip(ui, "you", ACCENT);
                 }
@@ -1319,72 +1375,64 @@ impl App {
                 } else if n.exit_node_option {
                     chip(ui, "exit node", MUTED);
                 }
-            });
-            ui.horizontal(|ui| {
                 for t in &n.tags {
                     chip(ui, format!("{} {t}", icon::TAG), PURPLE);
                 }
+            });
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let os = self.os_of(n);
+                ui.label(RichText::new(os.title()).size(12.5).color(MUTED));
+                if let Some(d) = os.detail() {
+                    ui.label(RichText::new(d).size(12.5).color(FAINT));
+                }
                 // The owner only earns room when it is someone else.
                 if n.tags.is_empty() && n.user_login != s.me.user_login {
-                    ui.label(RichText::new(&n.user_login).size(12.0).color(MUTED));
-                }
-                let os = self.os_of(n);
-                ui.label(RichText::new(os.title()).size(12.0).color(MUTED));
-                if let Some(d) = os.detail() {
-                    ui.label(RichText::new(d).size(12.0).color(FAINT));
+                    ui.label(RichText::new(&n.user_login).size(12.5).color(FAINT));
                 }
             });
         });
 
-        ui.scope_builder(
-            UiBuilder::new()
-                .max_rect(ip_r)
-                .layout(Layout::left_to_right(Align::Center)),
-            |ui| {
-                let ip = n.ipv4().to_owned();
-                if copy_label(ui, &ip, 13.0) {
-                    self.copy(ctx, &ip);
-                }
-            },
-        );
+        ui.scope_builder(in_row(ip_r), |ui| {
+            let ip = n.ipv4().to_owned();
+            if copy_label(ui, &ip, 13.0) {
+                self.copy(ctx, &ip);
+            }
+        });
 
-        ui.scope_builder(centered(conn_r), |ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
-            let (c, col) = connection(n);
-            ui.label(RichText::new(c).size(12.5).color(col));
-            let seen = if n.online {
-                "online now".to_owned()
+        // Status in words: how it is connected, or when it was last around.
+        ui.scope_builder(in_row(conn_r), |ui| {
+            let (text, col) = if n.online || n.is_self {
+                let (c, col) = connection(n);
+                (sentence(&c), col)
             } else {
-                format!("seen {}", ago(n.last_seen))
+                (format!("Seen {}", ago(n.last_seen)), FAINT)
             };
-            ui.label(RichText::new(seen).size(12.0).color(MUTED))
+            ui.label(RichText::new(text).size(13.0).color(col))
                 .on_hover_text(local_time(n.last_seen));
         });
 
-        // Access to and from this device, at a glance.
-        if !n.is_self && acc_w > 0.0 {
-            if let Some(m) = &self.matrix {
-                ui.scope_builder(
-                    UiBuilder::new()
-                        .max_rect(acc_r)
-                        .layout(Layout::left_to_right(Align::Center)),
-                    |ui| {
-                        let me = &s.me.stable_id;
-                        access_line(
-                            ui,
-                            icon::ARROW_RIGHT,
-                            "You can reach it",
-                            &m.get(me, &n.stable_id),
-                        );
-                        ui.add_space(6.0);
-                        access_line(
-                            ui,
-                            icon::ARROW_LEFT,
-                            "It can reach you",
-                            &m.get(&n.stable_id, me),
-                        );
-                    },
-                );
+        // Access only speaks up when something is blocked; open both ways is normal.
+        if !n.is_self
+            && note_w > 0.0
+            && let Some(m) = &self.matrix
+        {
+            let me = &s.me.stable_id;
+            let (out, inn) = (m.get(me, &n.stable_id), m.get(&n.stable_id, me));
+            let note = match (out.allowed(), inn.allowed()) {
+                (Some(false), Some(false)) => Some(("No access", RED, &out)),
+                (Some(false), _) => Some(("You can't reach it", RED, &out)),
+                (_, Some(false)) => Some(("Can't reach you", MUTED, &inn)),
+                _ => None,
+            };
+            if let Some((text, col, a)) = note {
+                ui.scope_builder(in_row(note_r), |ui| {
+                    ui.spacing_mut().item_spacing.x = 5.0;
+                    let (_, _, how) = access_text(a);
+                    ui.label(RichText::new(icon::BAN).size(12.0).color(col));
+                    ui.label(RichText::new(text).size(12.5).color(col))
+                        .on_hover_text(how);
+                });
             }
         }
 
@@ -1654,7 +1702,7 @@ impl App {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(RichText::new("Tailscale shares other devices' OS versions only through its API.").size(11.5).color(FAINT));
                         if ui.link(RichText::new("Connect to see them").size(11.5)).clicked() {
-                            self.connect = Some(ConnectDialog::default());
+                            self.onboard = Some(Onboarding::at(onboard::OS_STEP));
                         }
                     });
                 }
@@ -1720,90 +1768,6 @@ impl App {
                 ui.add_space(6.0);
             }
         });
-    }
-
-    fn connect_dialog(&mut self, ctx: &egui::Context) {
-        if self.connect.is_none() {
-            return;
-        }
-        let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
-        let mut go = false;
-        egui::Modal::new(egui::Id::new("connect"))
-            .frame(
-                Frame::new()
-                    .fill(PANEL)
-                    .stroke(Stroke::new(1.0, BORDER))
-                    .corner_radius(CornerRadius::same(14))
-                    .inner_margin(Margin::same(22)),
-            )
-            .show(ctx, |ui| {
-                let d = self.connect.as_mut().unwrap();
-                ui.set_width(440.0);
-                ui.spacing_mut().item_spacing.y = 8.0;
-                ui.label(RichText::new("See every device's OS version").heading());
-                ui.label(
-                    RichText::new(
-                        "Tailscale shares distro, kernel and OS versions only through its API. \
-                         Make a read-only credential once and paste it here. \
-                         It stays in your keyring and can't change anything on your tailnet.",
-                    )
-                    .color(MUTED),
-                );
-                ui.add_space(6.0);
-                step(ui, "1", "Open the Tailscale admin console.", |ui| {
-                    if ui.button(format!("{}   Open admin console", icon::GLOBE)).clicked() {
-                        ui.ctx().open_url(egui::OpenUrl::new_tab(osinfo::CONSOLE_URL));
-                    }
-                });
-                step(ui, "2", "Create an OAuth client. Give it Read on Devices Core and on Device posture, nothing else.", |_| {});
-                step(ui, "3", "Paste the client secret.", |ui| {
-                    let edit = ui.add(
-                        egui::TextEdit::singleline(&mut d.secret)
-                            .password(true)
-                            .hint_text("tskey-client-...")
-                            .desired_width(f32::INFINITY),
-                    );
-                    if edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        go = true;
-                    }
-                });
-                let valid = osinfo::client_id(&d.secret).is_some();
-                if !d.secret.trim().is_empty() && !valid {
-                    ui.label(
-                        RichText::new("A client secret starts with tskey-client-.")
-                            .size(12.0)
-                            .color(AMBER),
-                    );
-                }
-                if let Some(e) = &d.error {
-                    ui.label(RichText::new(e).size(12.0).color(RED));
-                }
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let label = if d.busy { "Checking" } else { "Connect" };
-                        if ui
-                            .add_enabled_ui(valid && !d.busy, |ui| primary_button(ui, label))
-                            .inner
-                            .clicked()
-                        {
-                            go = true;
-                        }
-                        if d.busy {
-                            ui.spinner();
-                        }
-                        if ui.button("Cancel").clicked() {
-                            close = true;
-                        }
-                    });
-                });
-                go &= valid && !d.busy;
-            });
-        if go {
-            self.start_connect(ctx);
-        } else if close {
-            self.cancel_connect();
-        }
     }
 
     fn draw_toasts(&mut self, ctx: &egui::Context) {
@@ -1874,17 +1838,6 @@ fn access_text(a: &Access) -> (&'static str, Color32, String) {
         Access::Denied(source) => (icon::BAN, RED, how(*source).to_owned()),
         Access::Unknown => ("?", MUTED, "not known yet".into()),
     }
-}
-
-fn access_line(ui: &mut Ui, arrow: &str, what: &str, a: &Access) {
-    let (glyph, col, how) = access_text(a);
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        ui.label(RichText::new(arrow).size(11.0).color(MUTED));
-        ui.label(RichText::new(glyph).size(11.0).color(col));
-    })
-    .response
-    .on_hover_text(format!("{what}: {how}"));
 }
 
 fn access_detail(ui: &mut Ui, what: &str, a: &Access) {
