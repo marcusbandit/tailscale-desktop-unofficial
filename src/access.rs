@@ -9,7 +9,7 @@
 //! - inferred: policies are written against users and tags, so devices with the
 //!   same owner and tags get the same treatment as a device already known
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ts::{FilterRule, Node, Snapshot, ip_matches};
 
@@ -146,55 +146,64 @@ pub fn build(snap: &Snapshot, probes: &Probes) -> Matrix {
     };
 
     // me -> T: probe if we have one, else infer from how T's class treats me.
-    let from_me = |t: &Node| -> Access {
-        match probes.get(&t.stable_id) {
-            Some(true) => Access::Allowed {
-                source: Source::Probed,
-                ports: "ICMP answered".into(),
-            },
-            Some(false) => Access::Denied(Source::Probed),
-            None if t.class() == my_class => class_to_me(&my_class).with_source(Source::Inferred),
-            None => {
-                // Another device of T's class that I did reach or fail to reach.
-                snap.peers
-                    .iter()
-                    .filter(|p| p.class() == t.class())
-                    .filter_map(|p| probes.get(&p.stable_id))
-                    .next()
-                    .map(|&ok| {
-                        if ok {
-                            Access::Allowed {
-                                source: Source::Inferred,
-                                ports: String::new(),
-                            }
-                        } else {
-                            Access::Denied(Source::Inferred)
-                        }
-                    })
-                    .unwrap_or(Access::Unknown)
-            }
-        }
-    };
+    // A failed ping may be a firewall or a slow relay, so only a successful
+    // probe is spread to other devices of the same class.
+    let class: HashMap<&str, String> = snap
+        .all()
+        .map(|n| (n.stable_id.as_str(), n.class()))
+        .collect();
+    let my_class_reach = class_to_me(&my_class).with_source(Source::Inferred);
+    let reached_classes: HashSet<&str> = snap
+        .peers
+        .iter()
+        .filter(|p| probes.get(&p.stable_id) == Some(&true))
+        .map(|p| class[p.stable_id.as_str()].as_str())
+        .collect();
+    let from_me: HashMap<&str, Access> = snap
+        .peers
+        .iter()
+        .map(|t| {
+            let c = class[t.stable_id.as_str()].as_str();
+            let a = match probes.get(&t.stable_id) {
+                Some(true) => Access::Allowed {
+                    source: Source::Probed,
+                    ports: "ICMP answered".into(),
+                },
+                Some(false) => Access::Denied(Source::Probed),
+                None if c == my_class => my_class_reach.clone(),
+                None if reached_classes.contains(c) => Access::Allowed {
+                    source: Source::Inferred,
+                    ports: String::new(),
+                },
+                None => Access::Unknown,
+            };
+            (t.stable_id.as_str(), a)
+        })
+        .collect();
 
     for p in &snap.peers {
         edges.insert(
             (p.stable_id.clone(), me.stable_id.clone()),
             to_me[p.stable_id.as_str()].clone(),
         );
-        edges.insert((me.stable_id.clone(), p.stable_id.clone()), from_me(p));
+        edges.insert(
+            (me.stable_id.clone(), p.stable_id.clone()),
+            from_me[p.stable_id.as_str()].clone(),
+        );
     }
 
     for x in &snap.peers {
+        let xc = class[x.stable_id.as_str()].as_str();
         for t in &snap.peers {
             if x.stable_id == t.stable_id {
                 continue;
             }
-            let a = if t.class() == my_class {
+            let a = if class[t.stable_id.as_str()] == my_class {
                 // T is treated like me, so X reaches T the way X reaches me.
                 to_me[x.stable_id.as_str()].with_source(Source::Inferred)
-            } else if x.class() == my_class {
+            } else if xc == my_class {
                 // X is treated like me, so X reaches T the way I reach T.
-                from_me(t).with_source(Source::Inferred)
+                from_me[t.stable_id.as_str()].with_source(Source::Inferred)
             } else {
                 Access::Unknown
             };

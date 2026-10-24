@@ -266,7 +266,7 @@ fn parse_node(v: &Value, users: &Value, is_self: bool) -> Node {
     }
 }
 
-pub fn fetch_snapshot(with_filter: bool) -> Result<Snapshot, String> {
+pub fn fetch_snapshot() -> Result<Snapshot, String> {
     let st = get_json("/localapi/v0/status")?;
     let prefs: Prefs =
         serde_json::from_value(get_json("/localapi/v0/prefs")?).map_err(|e| e.to_string())?;
@@ -306,11 +306,7 @@ pub fn fetch_snapshot(with_filter: bool) -> Result<Snapshot, String> {
         me,
         peers,
         prefs,
-        filter: if with_filter {
-            fetch_filter().ok()
-        } else {
-            None
-        },
+        filter: None,
         waiting_files,
     })
 }
@@ -413,12 +409,27 @@ pub fn patch_prefs(body: Value) -> Result<(), String> {
 }
 
 pub fn set_running(on: bool) -> Result<(), String> {
-    match patch_prefs(json!({ "WantRunning": on, "WantRunningSet": true })) {
+    let prefs = json!({ "WantRunning": on, "WantRunningSet": true });
+    let body = prefs.to_string();
+    match patch_prefs(prefs) {
         Ok(()) => Ok(()),
-        // Not the operator: do it as root instead.
-        Err(e) if e.contains("operator") => {
-            run_as_root(&["tailscale", if on { "up" } else { "down" }])
-        }
+        // Not the operator: send the same prefs change as root. `tailscale up`
+        // would refuse whenever a non-default pref is set.
+        Err(e) if e.contains("operator") => run_as_root(&[
+            "curl",
+            "-sf",
+            "--unix-socket",
+            SOCKET,
+            "-X",
+            "PATCH",
+            "-H",
+            "Sec-Tailscale: localapi",
+            "-d",
+            &body,
+            "http://local-tailscaled.sock/localapi/v0/prefs",
+            "-o",
+            "/dev/null",
+        ]),
         Err(e) => Err(e),
     }
 }
@@ -474,31 +485,42 @@ pub fn run_as_root(cmd: &[&str]) -> Result<(), String> {
         };
     }
     let script = format!(
-        "echo 'Tailscale Desktop needs root for: {0}'; sudo {0}; s=$?; [ $s -ne 0 ] && {{ echo; read -r -p 'Failed. Press Enter to close.'; }}; exit $s",
-        cmd.join(" ")
+        "echo 'Tailscale Desktop needs root to run {1}.'; sudo {0}; s=$?; [ $s -ne 0 ] && {{ echo; read -r -p 'Failed. Press Enter to close.'; }}; exit $s",
+        cmd.iter()
+            .map(|a| shell_quote(a))
+            .collect::<Vec<_>>()
+            .join(" "),
+        cmd[0].replace('\'', "")
     );
-    let term = std::env::var("TERMINAL").ok();
-    let candidates: Vec<(String, Vec<String>)> = term
+    // How each terminal wants the command handed over.
+    let prefix = |bin: &str| -> Vec<String> {
+        let base = bin.rsplit('/').next().unwrap_or(bin);
+        match base {
+            "kitty" => vec!["--class".into(), "tailscale-desktop-sudo".into()],
+            "foot" | "wezterm" => vec![],
+            "gnome-terminal" => vec!["--wait".into(), "--".into()],
+            "ghostty" => vec!["-e".into()],
+            _ => vec!["-e".into()],
+        }
+    };
+    let candidates: Vec<(String, Vec<String>)> = std::env::var("TERMINAL")
+        .ok()
         .into_iter()
-        .map(|t| (t, vec!["-e".to_owned()]))
-        .chain([
-            (
-                "kitty".to_owned(),
-                vec![
-                    "--class".into(),
-                    "tailscale-desktop-sudo".into(),
-                    "-e".into(),
-                ],
-            ),
-            ("foot".to_owned(), vec![]),
-            ("alacritty".to_owned(), vec!["-e".into()]),
-            (
-                "gnome-terminal".to_owned(),
-                vec!["--wait".into(), "--".into()],
-            ),
-            ("konsole".to_owned(), vec!["-e".into()]),
-            ("xterm".to_owned(), vec!["-e".into()]),
-        ])
+        .chain(
+            [
+                "kitty",
+                "foot",
+                "alacritty",
+                "gnome-terminal",
+                "konsole",
+                "xterm",
+            ]
+            .map(String::from),
+        )
+        .map(|t| {
+            let p = prefix(&t);
+            (t, p)
+        })
         .collect();
     for (bin, pre) in candidates {
         let mut c = Command::new(&bin);
@@ -512,6 +534,16 @@ pub fn run_as_root(cmd: &[&str]) -> Result<(), String> {
         }
     }
     Err("No polkit agent and no terminal found to ask for the sudo password".into())
+}
+
+fn shell_quote(s: &str) -> String {
+    if s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || "-_./:=".contains(c))
+    {
+        s.to_owned()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -642,6 +674,18 @@ mod tests {
             "fd7a:115c:a1e0::6d01:2897"
         ));
         assert!(!ip_matches("100.94.40.21", "fd7a:115c:a1e0::6d01:2897"));
+    }
+
+    #[test]
+    fn shell_quoting_round_trips() {
+        let body = r#"{"WantRunning":true}"#;
+        let q = shell_quote(body);
+        let out = Command::new("sh")
+            .args(["-c", &format!("printf %s {q}")])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), body);
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
     }
 
     #[test]

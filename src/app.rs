@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -68,6 +70,7 @@ pub struct App {
     graph: GraphState,
     shot: Option<crate::shot::Shot>,
     pending_ping: Option<Node>,
+    failures: u32,
 }
 
 impl App {
@@ -94,6 +97,7 @@ impl App {
             graph: GraphState::default(),
             shot: crate::shot::Shot::from_env(),
             pending_ping: None,
+            failures: 0,
         }
         .with_env()
     }
@@ -171,11 +175,7 @@ impl App {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 Msg::Snapshot(Ok(s)) => {
-                    let had_filter = self.snap.as_ref().and_then(|o| o.filter.clone());
-                    let mut s = s;
-                    if s.filter.is_none() {
-                        s.filter = had_filter;
-                    }
+                    self.failures = 0;
                     if self.selected.is_none() && self.snap.is_none() {
                         if let Ok(name) = std::env::var("TSDU_SELECT") {
                             self.selected = s
@@ -195,9 +195,16 @@ impl App {
                 }
                 Msg::Snapshot(Err(e)) => {
                     self.error = Some(e);
+                    // Two misses in a row: tailscaled is gone, stop showing old state.
+                    self.failures += 1;
+                    if self.failures >= 2 {
+                        self.snap = None;
+                        self.matrix = None;
+                    }
                 }
                 Msg::Probes(p) => {
-                    self.probes.extend(p);
+                    // A full round replaces the last, so peers that went offline drop out.
+                    self.probes = p;
                     self.rebuild();
                 }
                 Msg::Ping(id, r) => self.pings.entry(id).or_default().results.push(r),
@@ -222,17 +229,28 @@ impl App {
 
 fn spawn_worker(tx: Sender<Msg>, wake: Receiver<bool>, ctx: egui::Context) {
     thread::spawn(move || {
-        let mut last_filter = Instant::now() - Duration::from_secs(3600);
-        let mut last_probe = Instant::now() - Duration::from_secs(3600);
+        let long_ago = Instant::now() - Duration::from_secs(3600);
+        let mut last_filter_try = long_ago;
+        // Last packet filter read and when; older than a minute counts as unknown.
+        let mut filter: Option<(Vec<ts::FilterRule>, Instant)> = None;
+        let mut last_probe = long_ago;
         let mut force_probe = false;
+        let probing = Arc::new(AtomicBool::new(false));
         loop {
-            let want_filter = last_filter.elapsed() > Duration::from_secs(10);
-            let snap = ts::fetch_snapshot(want_filter);
-            if want_filter {
-                last_filter = Instant::now();
+            if last_filter_try.elapsed() > Duration::from_secs(10) {
+                last_filter_try = Instant::now();
+                if let Ok(f) = ts::fetch_filter() {
+                    filter = Some((f, Instant::now()));
+                }
             }
-            if let Ok(s) = &snap {
-                if s.running() && (force_probe || last_probe.elapsed() > Duration::from_secs(60)) {
+            let mut snap = ts::fetch_snapshot();
+            if let Ok(s) = &mut snap {
+                s.filter = filter
+                    .as_ref()
+                    .filter(|(_, at)| at.elapsed() < Duration::from_secs(60))
+                    .map(|(f, _)| f.clone());
+                let due = force_probe || last_probe.elapsed() > Duration::from_secs(60);
+                if s.running() && due && !probing.swap(true, Ordering::SeqCst) {
                     last_probe = Instant::now();
                     force_probe = false;
                     let targets: Vec<(String, String)> = s
@@ -241,18 +259,30 @@ fn spawn_worker(tx: Sender<Msg>, wake: Receiver<bool>, ctx: egui::Context) {
                         .filter(|p| p.online)
                         .map(|p| (p.stable_id.clone(), p.ipv4().to_owned()))
                         .collect();
-                    let (tx2, ctx2) = (tx.clone(), ctx.clone());
+                    let (tx2, ctx2, probing2) = (tx.clone(), ctx.clone(), probing.clone());
                     thread::spawn(move || {
-                        let results: Probes = thread::scope(|sc| {
-                            let hs: Vec<_> = targets
-                                .iter()
-                                .map(|(id, ip)| {
-                                    sc.spawn(move || (id.clone(), ts::ping(ip, true).is_ok()))
-                                })
-                                .collect();
-                            hs.into_iter().filter_map(|h| h.join().ok()).collect()
-                        });
+                        // Eight at a time; a second try before calling a peer closed.
+                        let mut results = Probes::new();
+                        for chunk in targets.chunks(8) {
+                            let part: Vec<(String, bool)> = thread::scope(|sc| {
+                                let hs: Vec<_> = chunk
+                                    .iter()
+                                    .map(|(id, ip)| {
+                                        sc.spawn(move || {
+                                            (
+                                                id.clone(),
+                                                ts::ping(ip, true).is_ok()
+                                                    || ts::ping(ip, true).is_ok(),
+                                            )
+                                        })
+                                    })
+                                    .collect();
+                                hs.into_iter().filter_map(|h| h.join().ok()).collect()
+                            });
+                            results.extend(part);
+                        }
                         tx2.send(Msg::Probes(results)).ok();
+                        probing2.store(false, Ordering::SeqCst);
                         ctx2.request_repaint();
                     });
                 }
@@ -264,7 +294,7 @@ fn spawn_worker(tx: Sender<Msg>, wake: Receiver<bool>, ctx: egui::Context) {
             match wake.recv_timeout(Duration::from_secs(2)) {
                 Ok(probe) => {
                     force_probe |= probe;
-                    last_filter = Instant::now() - Duration::from_secs(3600);
+                    last_filter_try = long_ago;
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(_) => return,

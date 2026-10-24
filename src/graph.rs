@@ -238,8 +238,11 @@ pub fn show(
     for e in &edges {
         let (pa, pb) = (screen[e.a], screen[e.b]);
         let dir = (pb - pa).normalized();
-        let r = NODE_R * st.zoom;
-        let (s, d) = (pa + dir * (r + 3.0), pb - dir * (r + 4.0));
+        // Same radius the nodes are drawn with; tagged squares reach a bit further.
+        let rad = |i: usize| {
+            NODE_R * st.zoom.clamp(0.6, 1.6) * if nodes[i].tags.is_empty() { 1.0 } else { 1.15 }
+        };
+        let (s, d) = (pa + dir * (rad(e.a) + 3.0), pb - dir * (rad(e.b) + 4.0));
         let touches = focus_i.is_none_or(|f| f == e.a || f == e.b);
         let base = match e.kind {
             Kind::Both => Color32::from_rgb(0x4a, 0x55, 0x68),
