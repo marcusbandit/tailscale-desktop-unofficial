@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -28,8 +28,11 @@ enum Msg {
     /// This device's own Hostinfo.
     OsLocal(OsInfo),
     /// The API's view of every device; `None` when no credential is stored.
-    OsApi(Option<Result<HashMap<String, OsInfo>, String>>),
-    Connected(Result<(), String>),
+    /// Tagged with the epoch it was fetched in, so a reply that started before a
+    /// disconnect or a new connect is dropped.
+    OsApi(u64, Option<Result<HashMap<String, OsInfo>, String>>),
+    /// A connect attempt checked its credential: (attempt, secret and devices).
+    Verified(u64, Result<(String, HashMap<String, OsInfo>), String>),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -83,7 +86,11 @@ pub struct App {
     os: HashMap<String, OsInfo>,
     api: ApiState,
     os_wake: Sender<()>,
+    os_epoch: Arc<AtomicU64>,
     connect: Option<ConnectDialog>,
+    /// Bumped by every connect attempt and every cancel, so a check that comes
+    /// back after the dialog closed is ignored.
+    connect_attempt: u64,
 }
 
 #[derive(Default)]
@@ -106,8 +113,34 @@ impl App {
         let (wake, wake_rx) = mpsc::channel();
         spawn_worker(tx.clone(), wake_rx, cc.egui_ctx.clone());
         let (os_wake, os_wake_rx) = mpsc::channel();
-        spawn_os_worker(tx.clone(), os_wake_rx, cc.egui_ctx.clone());
-        let os_api = osinfo::load_cache();
+        let os_epoch = Arc::new(AtomicU64::new(0));
+        spawn_os_worker(
+            tx.clone(),
+            os_wake_rx,
+            os_epoch.clone(),
+            cc.egui_ctx.clone(),
+        );
+        // Cached versions only count while a credential is stored.
+        let (api, os_api) = match osinfo::load_secret() {
+            Ok(Some(_)) => (
+                ApiState {
+                    connected: true,
+                    error: None,
+                },
+                osinfo::load_cache(),
+            ),
+            Ok(None) => {
+                osinfo::clear_cache();
+                (ApiState::default(), HashMap::new())
+            }
+            Err(e) => (
+                ApiState {
+                    connected: true,
+                    error: Some(e),
+                },
+                osinfo::load_cache(),
+            ),
+        };
         Self {
             tx,
             rx,
@@ -129,12 +162,11 @@ impl App {
             failures: 0,
             os_local: None,
             os: os_api.clone(),
-            api: ApiState {
-                connected: !os_api.is_empty(),
-                error: None,
-            },
+            api,
             os_api,
             os_wake,
+            os_epoch,
+            connect_attempt: 0,
             connect: std::env::var("TSDU_CONNECT")
                 .is_ok()
                 .then(ConnectDialog::default),
@@ -266,39 +298,53 @@ impl App {
                     self.os_local = Some(info);
                     self.merge_os();
                 }
-                Msg::OsApi(None) => {
+                Msg::OsApi(epoch, _) if epoch != self.os_epoch.load(Ordering::SeqCst) => {}
+                Msg::OsApi(_, None) => {
+                    osinfo::clear_cache();
                     self.api = ApiState::default();
                     self.os_api.clear();
                     self.merge_os();
                 }
-                Msg::OsApi(Some(Ok(map))) => {
-                    self.api = ApiState {
-                        connected: true,
-                        error: None,
-                    };
-                    osinfo::save_cache(&map);
-                    self.os_api = map;
-                    self.merge_os();
-                }
-                Msg::OsApi(Some(Err(e))) => {
+                Msg::OsApi(_, Some(Ok(map))) => self.apply_os(map),
+                Msg::OsApi(_, Some(Err(e))) => {
                     // Keep showing the last good versions; say what went wrong.
                     self.api.connected = true;
                     self.api.error = Some(e);
                 }
-                Msg::Connected(r) => match r {
-                    Ok(()) => {
-                        self.connect = None;
-                        self.toast("Connected. OS versions are on.", false);
-                    }
-                    Err(e) => {
-                        if let Some(d) = &mut self.connect {
-                            d.busy = false;
-                            d.error = Some(e);
+                Msg::Verified(attempt, _) if attempt != self.connect_attempt => {}
+                Msg::Verified(_, r) => {
+                    let r = r.and_then(|(secret, map)| {
+                        osinfo::store_secret(&secret)?;
+                        Ok(map)
+                    });
+                    match r {
+                        Ok(map) => {
+                            // Anything the worker had in flight predates this credential.
+                            self.os_epoch.fetch_add(1, Ordering::SeqCst);
+                            self.apply_os(map);
+                            self.connect = None;
+                            self.toast("Connected. OS versions are on.", false);
+                        }
+                        Err(e) => {
+                            if let Some(d) = &mut self.connect {
+                                d.busy = false;
+                                d.error = Some(e);
+                            }
                         }
                     }
-                },
+                }
             }
         }
+    }
+
+    fn apply_os(&mut self, map: HashMap<String, OsInfo>) {
+        self.api = ApiState {
+            connected: true,
+            error: None,
+        };
+        osinfo::save_cache(&map);
+        self.os_api = map;
+        self.merge_os();
     }
 
     fn merge_os(&mut self) {
@@ -324,28 +370,32 @@ impl App {
         };
         d.busy = true;
         d.error = None;
+        self.connect_attempt += 1;
+        let attempt = self.connect_attempt;
         let secret = d.secret.trim().to_owned();
         let (tx, ctx) = (self.tx.clone(), ctx.clone());
         thread::spawn(move || {
-            // Prove the credential works before keeping it.
-            let r = osinfo::Api::new(secret.clone()).fetch().and_then(|map| {
-                osinfo::store_secret(&secret)?;
-                Ok(map)
-            });
-            match r {
-                Ok(map) => {
-                    tx.send(Msg::OsApi(Some(Ok(map)))).ok();
-                    tx.send(Msg::Connected(Ok(()))).ok();
-                }
-                Err(e) => {
-                    tx.send(Msg::Connected(Err(e))).ok();
-                }
-            }
+            // Prove the credential works; the UI keeps it only if the dialog is
+            // still waiting for this attempt.
+            let r = osinfo::Api::new(secret.clone())
+                .fetch()
+                .map(|map| (secret, map));
+            tx.send(Msg::Verified(attempt, r)).ok();
             ctx.request_repaint();
         });
     }
 
+    fn rebuild(&mut self) {
+        self.matrix = self.snap.as_ref().map(|s| access::build(s, &self.probes));
+    }
+
+    fn cancel_connect(&mut self) {
+        self.connect = None;
+        self.connect_attempt += 1;
+    }
+
     fn disconnect(&mut self) {
+        self.os_epoch.fetch_add(1, Ordering::SeqCst);
         osinfo::clear_secret();
         osinfo::clear_cache();
         self.api = ApiState::default();
@@ -356,10 +406,6 @@ impl App {
             "Disconnected. The credential is gone from the keyring.",
             false,
         );
-    }
-
-    fn rebuild(&mut self) {
-        self.matrix = self.snap.as_ref().map(|s| access::build(s, &self.probes));
     }
 }
 
@@ -441,7 +487,7 @@ fn spawn_worker(tx: Sender<Msg>, wake: Receiver<bool>, ctx: egui::Context) {
 
 /// Reads this device's Hostinfo once, then asks the Tailscale API about every
 /// device every 15 minutes while a credential is stored.
-fn spawn_os_worker(tx: Sender<Msg>, wake: Receiver<()>, ctx: egui::Context) {
+fn spawn_os_worker(tx: Sender<Msg>, wake: Receiver<()>, epoch: Arc<AtomicU64>, ctx: egui::Context) {
     thread::spawn(move || {
         if let Some(info) = osinfo::local() {
             tx.send(Msg::OsLocal(info)).ok();
@@ -449,19 +495,21 @@ fn spawn_os_worker(tx: Sender<Msg>, wake: Receiver<()>, ctx: egui::Context) {
         }
         let mut api: Option<(String, osinfo::Api)> = None;
         loop {
+            let started = epoch.load(Ordering::SeqCst);
             let msg = match osinfo::load_secret() {
-                None => {
+                Ok(None) => {
                     api = None;
                     None
                 }
-                Some(secret) => {
+                Err(e) => Some(Err(e)),
+                Ok(Some(secret)) => {
                     if api.as_ref().is_none_or(|(s, _)| *s != secret) {
                         api = Some((secret.clone(), osinfo::Api::new(secret)));
                     }
                     Some(api.as_mut().unwrap().1.fetch())
                 }
             };
-            if tx.send(Msg::OsApi(msg)).is_err() {
+            if tx.send(Msg::OsApi(started, msg)).is_err() {
                 return;
             }
             ctx.request_repaint();
@@ -1561,9 +1609,8 @@ impl App {
                     ("Connection", conn, col),
                     ("System", os.title(), TEXT),
                 ];
-                if let Some(d) = os.detail() {
-                    let key = if os.os == "linux" { "Kernel" } else { "Version" };
-                    rows.push((key, d.split_once(' ').map_or(d.clone(), |(_, v)| v.to_owned()), TEXT));
+                if let Some((key, v)) = os.detail_row() {
+                    rows.push((key, v, TEXT));
                 }
                 if !os.arch.is_empty() {
                     rows.push(("Architecture", os.arch.clone(), TEXT));
@@ -1755,7 +1802,7 @@ impl App {
         if go {
             self.start_connect(ctx);
         } else if close {
-            self.connect = None;
+            self.cancel_connect();
         }
     }
 

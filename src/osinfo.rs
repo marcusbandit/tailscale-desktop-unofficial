@@ -71,18 +71,25 @@ impl OsInfo {
         }
     }
 
-    /// The finer version under the title: the kernel on Linux, the build on Windows.
-    pub fn detail(&self) -> Option<String> {
+    /// The finer version under the title, labelled: the kernel on Linux, the
+    /// build on Windows.
+    pub fn detail_row(&self) -> Option<(&'static str, String)> {
         let v = self.os_version.as_str();
         if v.is_empty() {
             return None;
         }
         match self.os.as_str() {
-            "linux" => Some(format!("kernel {v}")),
-            "windows" => windows_build(v).map(|b| format!("build {b}")),
-            "android" if v.contains('.') => Some(format!("version {v}")),
+            "linux" => Some(("Kernel", v.to_owned())),
+            "windows" => windows_build(v).map(|b| ("Build", b.to_string())),
+            "android" if v.contains('.') => Some(("Version", v.to_owned())),
             _ => None,
         }
+    }
+
+    /// `detail_row` as one phrase, for the device list.
+    pub fn detail(&self) -> Option<String> {
+        self.detail_row()
+            .map(|(k, v)| format!("{} {v}", k.to_lowercase()))
     }
 
     /// Fill gaps from another source without overwriting what is known.
@@ -201,14 +208,25 @@ const KEYRING_ATTRS: [&str; 4] = [
     "oauth-client",
 ];
 
-pub fn load_secret() -> Option<String> {
+/// The stored secret, `Ok(None)` when there is none, and an error when the
+/// keyring could not be asked, such as while it is still locked after login.
+pub fn load_secret() -> Result<Option<String>, String> {
     let out = Command::new("secret-tool")
         .arg("lookup")
         .args(KEYRING_ATTRS)
         .output()
-        .ok()?;
-    let s = String::from_utf8(out.stdout).ok()?.trim().to_owned();
-    (!s.is_empty()).then_some(s)
+        .map_err(|e| format!("Could not run secret-tool: {e}"))?;
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    if !s.is_empty() {
+        return Ok(Some(s));
+    }
+    // No match exits 1 quietly; anything on stderr means the keyring itself failed.
+    let err = String::from_utf8_lossy(&out.stderr).trim().to_owned();
+    if err.is_empty() {
+        Ok(None)
+    } else {
+        Err(format!("The keyring is not available: {err}"))
+    }
 }
 
 pub fn store_secret(secret: &str) -> Result<(), String> {
@@ -301,21 +319,14 @@ impl Api {
         Ok(t)
     }
 
+    /// GET with the current token, and one retry with a fresh token on 401.
     fn get(&mut self, path: &str) -> Result<(u16, Value), String> {
-        let token = self.token()?;
-        let mut resp = ureq::get(format!("{API}{path}"))
-            .header("Authorization", format!("Bearer {token}"))
-            .config()
-            .http_status_as_error(false)
-            .build()
-            .call()
-            .map_err(|e| format!("Could not reach the Tailscale API: {e}"))?;
-        let status = resp.status().as_u16();
-        if status == 401 {
-            self.token = None;
+        let r = get_with(&self.token()?, path)?;
+        if r.0 != 401 {
+            return Ok(r);
         }
-        let body = resp.body_mut().read_json().unwrap_or(Value::Null);
-        Ok((status, body))
+        self.token = None;
+        get_with(&self.token()?, path)
     }
 
     /// OS detail for every device in the tailnet, keyed by stable node id.
@@ -323,13 +334,15 @@ impl Api {
         let (status, body) = self.get("/tailnet/-/devices?fields=all")?;
         if status != 200 {
             return Err(match status {
-                403 => "The credential cannot read devices. Give it the Devices Core read scope."
-                    .into(),
+                401 | 403 => {
+                    "The credential cannot read devices. Give it Read on Devices Core.".into()
+                }
                 _ => format!("Listing devices failed with {status}."),
             });
         }
         let mut out = parse_devices(&body);
-        // The kernel or OS version is a posture attribute, one request per device.
+        // The kernel or OS version is a posture attribute, one request per
+        // device, eight at a time. A device whose request fails keeps the rest.
         let ids: Vec<(String, String)> = body["devices"]
             .as_array()
             .into_iter()
@@ -341,20 +354,49 @@ impl Api {
                 ))
             })
             .collect();
-        for (device, node) in ids {
-            let (status, attrs) = self.get(&format!("/device/{device}/attributes"))?;
-            if status == 403 {
-                // Missing the posture scope: distros still show, versions do not.
-                break;
-            }
-            if let (200, Some(v)) = (status, attrs["attributes"]["node:osVersion"].as_str())
-                && let Some(info) = out.get_mut(&node)
-            {
-                info.os_version = v.to_owned();
+        let token = self.token()?;
+        for chunk in ids.chunks(8) {
+            let versions: Vec<(String, Option<String>)> = std::thread::scope(|sc| {
+                let hs: Vec<_> = chunk
+                    .iter()
+                    .map(|(device, node)| {
+                        let token = &token;
+                        sc.spawn(move || {
+                            let v = get_with(token, &format!("/device/{device}/attributes"))
+                                .ok()
+                                .filter(|(status, _)| *status == 200)
+                                .and_then(|(_, a)| {
+                                    a["attributes"]["node:osVersion"]
+                                        .as_str()
+                                        .map(str::to_owned)
+                                });
+                            (node.clone(), v)
+                        })
+                    })
+                    .collect();
+                hs.into_iter().filter_map(|h| h.join().ok()).collect()
+            });
+            for (node, v) in versions {
+                if let (Some(v), Some(info)) = (v, out.get_mut(&node)) {
+                    info.os_version = v;
+                }
             }
         }
         Ok(out)
     }
+}
+
+fn get_with(token: &str, path: &str) -> Result<(u16, Value), String> {
+    let mut resp = ureq::get(format!("{API}{path}"))
+        .header("Authorization", format!("Bearer {token}"))
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .call()
+        .map_err(|e| format!("Could not reach the Tailscale API: {e}"))?;
+    let status = resp.status().as_u16();
+    let body = resp.body_mut().read_json().unwrap_or(Value::Null);
+    Ok((status, body))
 }
 
 fn parse_devices(body: &Value) -> HashMap<String, OsInfo> {
@@ -461,6 +503,7 @@ mod tests {
         let win = info("windows", "", "", "10.0.26100.2033");
         assert_eq!(win.title(), "Windows 11");
         assert_eq!(win.detail().as_deref(), Some("build 26100"));
+        assert_eq!(win.detail_row(), Some(("Build", "26100".to_owned())));
         assert_eq!(
             info("windows", "", "", "10.0.19045.1").title(),
             "Windows 10"
