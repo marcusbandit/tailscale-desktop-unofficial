@@ -20,6 +20,7 @@ use crate::theme::{icon, *};
 use crate::ts::{self, Node, Pong, Snapshot};
 
 mod onboard;
+mod replay;
 
 enum Msg {
     Snapshot(Result<Snapshot, String>),
@@ -110,6 +111,7 @@ struct Onboarding {
     busy: bool,
     /// Set once a credential checked out during this walkthrough.
     connected: bool,
+    replay: replay::Replay,
 }
 
 impl Onboarding {
