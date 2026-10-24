@@ -257,20 +257,17 @@ impl App {
         heading(ui, "Make the credential");
         body(
             ui,
-            "You need to be an owner or admin of the tailnet. Keep this window open next \
-             to the browser.",
+            "You need to be an owner or admin of the tailnet. Here is every click, \
+             played on a copy of the console. Open it next to this window and follow along.",
         );
         ui.add_space(20.0);
 
         let mut go = false;
+        let o = self.onboard.as_mut().unwrap();
         panel(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 14.0;
-            step(
-                ui,
-                "1",
-                "Open the Trust credentials page in the admin console.",
-                |ui| {
-                    ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("In the admin console").strong());
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui
                         .button(format!("{}   Open admin console", icon::GLOBE))
                         .clicked()
@@ -278,24 +275,14 @@ impl App {
                         ui.ctx()
                             .open_url(egui::OpenUrl::new_tab(osinfo::CONSOLE_URL));
                     }
-                },
-            );
-            step(ui, "2", "Press Credential, then choose OAuth.", |_| {});
-            step(
-                ui,
-                "3",
-                "Set Devices Core and Device posture to Read. Leave everything else off.",
-                |_| {},
-            );
-            step(
-                ui,
-                "4",
-                "Press Generate credential and copy the client secret. Tailscale shows it only once.",
-                |_| {},
-            );
-            let o = self.onboard.as_mut().unwrap();
-            step(ui, "5", "Paste it here.", |ui| {
-                ui.add_space(4.0);
+                });
+            });
+            ui.add_space(12.0);
+            super::replay::show(ui, &mut o.replay);
+            ui.add_space(6.0);
+            divider(ui);
+            step(ui, "6", "Paste the client secret here.", |ui| {
+                ui.add_space(6.0);
                 let edit = ui.add(
                     egui::TextEdit::singleline(&mut o.secret)
                         .password(true)
