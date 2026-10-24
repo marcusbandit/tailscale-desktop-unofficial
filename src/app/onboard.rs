@@ -216,7 +216,7 @@ impl App {
         ui.add_space(6.0);
         for line in [
             "One credential, made once in the Tailscale admin console. About a minute.",
-            "It can read device details and nothing else. It can't change your tailnet.",
+            "It can only read. It can't change anything on your tailnet.",
             "It is kept in your keyring, and Disconnect in the sidebar removes it.",
         ] {
             ui.horizontal_top(|ui| {
@@ -268,8 +268,7 @@ impl App {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("In the admin console").strong());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui
-                        .button(format!("{}   Open admin console", icon::GLOBE))
+                    if primary_button(ui, &format!("{}   Open admin console", icon::GLOBE))
                         .clicked()
                     {
                         ui.ctx()

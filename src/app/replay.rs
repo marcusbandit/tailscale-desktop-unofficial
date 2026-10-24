@@ -11,7 +11,6 @@ use crate::theme::{icon, *};
 
 // The console's dark theme, from its saved pages.
 const PAGE: Color32 = Color32::from_rgb(31, 30, 30);
-const SIDE: Color32 = Color32::from_rgb(25, 24, 24);
 const BAR: Color32 = Color32::from_rgb(18, 17, 17);
 const LINE: Color32 = Color32::from_rgb(56, 54, 53);
 const FIELD: Color32 = Color32::from_rgb(40, 39, 38);
@@ -22,7 +21,6 @@ const LINK: Color32 = Color32::from_rgb(108, 148, 236);
 
 const HEIGHT: f32 = 246.0;
 const CHROME: f32 = 26.0;
-const SIDEBAR: f32 = 112.0;
 
 // The pacing of one screen: a pause, then per click a glide, a press and a
 // moment to see what changed, then a hold before the next screen.
@@ -33,7 +31,7 @@ const AFTER: f32 = 0.5;
 const HOLD: f32 = 1.6;
 const CLICK: f32 = GLIDE + PRESS + AFTER;
 /// How far the scopes page scrolls to bring Generate credential into view.
-const SCROLL: f32 = 92.0;
+const SCROLL: f32 = 150.0;
 
 struct Scene {
     caption: &'static str,
@@ -53,9 +51,9 @@ const SCENES: [Scene; 5] = [
         clicks: 1,
     },
     Scene {
-        caption: "Open Devices and tick Read on Core and Posture attributes. Leave the rest off.",
+        caption: "Open the Custom scopes menu and pick All - Read.",
         path: "/admin/settings/trust-credentials/add",
-        clicks: 3,
+        clicks: 2,
     },
     Scene {
         caption: "Scroll down and press Generate credential.",
@@ -71,25 +69,30 @@ const SCENES: [Scene; 5] = [
 
 /// Which screen is playing and when it started. `TSDU_SCENE=<n>` pins screen n,
 /// counted from 1 like the written steps, at its last click, for captures.
+/// `TSDU_SCENE=<n>:<click>` pins it at that click instead, also from 1.
 pub struct Replay {
     scene: usize,
     t0: Option<f64>,
     /// The last frame drawn, so time spent away from the page or unfocused is
     /// skipped and the replay resumes where it was.
     last: f64,
-    pinned: bool,
+    /// The click a pinned screen holds at, counted from 1.
+    pinned: Option<usize>,
 }
 
 impl Default for Replay {
     fn default() -> Self {
-        let pin = std::env::var("TSDU_SCENE")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok());
+        let pin = std::env::var("TSDU_SCENE").ok().and_then(|v| {
+            let (scene, click) = v.split_once(':').unwrap_or((&v, ""));
+            Some((scene.parse::<usize>().ok()?, click.parse::<usize>().ok()))
+        });
+        let scene = pin.map_or(1, |p| p.0).clamp(1, SCENES.len()) - 1;
+        let clicks = SCENES[scene].clicks;
         Self {
-            scene: pin.unwrap_or(1).clamp(1, SCENES.len()) - 1,
+            scene,
             t0: None,
             last: 0.0,
-            pinned: pin.is_some(),
+            pinned: pin.map(|p| p.1.unwrap_or(clicks).clamp(1, clicks)),
         }
     }
 }
@@ -124,8 +127,7 @@ pub fn show(ui: &mut Ui, r: &mut Replay) {
         *t0 += gap;
     }
     let mut t = (now - *t0) as f32;
-    if r.pinned {
-        let n = SCENES[r.scene].clicks;
+    if let Some(n) = r.pinned {
         t = LEAD + (n - 1) as f32 * CLICK + GLIDE + PRESS * 0.6;
     } else if t > scene_len(SCENES[r.scene].clicks) {
         r.scene = (r.scene + 1) % SCENES.len();
@@ -135,14 +137,14 @@ pub fn show(ui: &mut Ui, r: &mut Replay) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), HEIGHT), Sense::hover());
     window(ui, rect, r.scene, t);
     // About 30 frames a second is plenty for a cursor, and nothing while unfocused.
-    if !r.pinned && focused {
+    if r.pinned.is_none() && focused {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(33));
     }
 
     ui.add_space(12.0);
     for (i, s) in SCENES.iter().enumerate() {
-        let progress = if i == r.scene && !r.pinned {
+        let progress = if i == r.scene && r.pinned.is_none() {
             Some((t / scene_len(s.clicks)).min(1.0))
         } else {
             None
@@ -150,7 +152,7 @@ pub fn show(ui: &mut Ui, r: &mut Replay) {
         if step_row(ui, i, s.caption, i == r.scene, progress).clicked() {
             r.scene = i;
             r.t0 = Some(now);
-            r.pinned = false;
+            r.pinned = None;
         }
     }
 }
@@ -263,14 +265,24 @@ fn window(ui: &Ui, rect: Rect, idx: usize, t: f32) {
     };
     let n = scene.clicks;
     let done = landed(t, n);
-    sidebar(&m, round);
     let targets = match idx {
         0 => list_page(&m, done),
         1 => add_page(&m, done),
-        2 => scopes_page(&m, 0.0, done, None),
-        3 => scopes_page(&m, -SCROLL * ease(t / LEAD), 3, Some(done)),
+        2 => {
+            // The menu stays open through the press on All - Read, then closes.
+            let closes = LEAD + CLICK + GLIDE + PRESS + 0.15;
+            let menu = done == 1 || (done == 2 && t < closes);
+            scopes_page(
+                &m,
+                0.0,
+                if menu { 1 } else { done },
+                None,
+                menu.then_some(done),
+            )
+        }
+        3 => scopes_page(&m, -SCROLL * ease(t / LEAD), 2, Some(done), None),
         _ => {
-            scopes_page(&m, -SCROLL, 3, Some(0));
+            scopes_page(&m, -SCROLL, 2, Some(0), None);
             let bottom = CornerRadius {
                 sw: round,
                 se: round,
@@ -406,58 +418,8 @@ impl Mini<'_> {
     }
     /// Where the content column starts and how wide it runs.
     fn col(&self) -> (f32, f32) {
-        let x = SIDEBAR + 28.0;
-        (x, (self.w - x - 28.0).min(420.0))
-    }
-}
-
-/// The console's sidebar, with Trust credentials as the open page.
-fn sidebar(m: &Mini, round: u8) {
-    let r = m.rect(0.0, 0.0, SIDEBAR, m.h);
-    m.p.rect_filled(
-        r,
-        CornerRadius {
-            sw: round,
-            ..Default::default()
-        },
-        SIDE,
-    );
-    m.p.vline(r.right(), r.y_range(), Stroke::new(1.0, LINE));
-    for row in 0..3 {
-        for col in 0..3 {
-            let lit = row == 1 || (row == 2 && col == 1);
-            m.p.circle_filled(
-                m.at(12.0 + col as f32 * 3.6, 10.0 + row as f32 * 3.6),
-                1.2,
-                if lit { INK } else { DIM.gamma_multiply(0.5) },
-            );
-        }
-    }
-    m.ghost(28.0, 12.0, 58.0);
-    let mut y = 30.0;
-    for item in ["Network", "Users", "Access controls", "Logs", "Settings"] {
-        m.text(12.0, y, item, 9.0, INK.gamma_multiply(0.85));
-        y += 14.0;
-    }
-    y += 2.0;
-    for (w, on) in [
-        (34.0, false),
-        (62.0, false),
-        (68.0, false),
-        (80.0, false),
-        (0.0, true),
-        (44.0, false),
-        (72.0, false),
-        (30.0, false),
-    ] {
-        if on {
-            m.p.rect_filled(m.rect(5.0, y - 3.0, SIDEBAR - 10.0, 15.0), 4.0, FIELD);
-            m.p.rect_filled(m.rect(13.0, y - 1.0, 1.5, 11.0), 1.0, INK);
-            m.text(20.0, y, "Trust credentials", 9.0, INK);
-        } else {
-            m.ghost(20.0, y + 3.0, w);
-        }
-        y += 16.0;
+        let w = (self.w - 56.0).min(440.0);
+        ((self.w - w) / 2.0, w)
     }
 }
 
@@ -579,12 +541,21 @@ fn stepper(m: &Mini, x: f32, y: f32, at: usize) {
     }
 }
 
-/// New credential, step two. `done` counts the clicks so far: Devices opened,
-/// then Read on Core, then Read on Posture attributes. `dy` scrolls the page.
-/// `generate` makes Generate credential the target, with the clicks landed on it.
-fn scopes_page(m: &Mini, dy: f32, done: usize, generate: Option<usize>) -> Vec<Pos2> {
+/// New credential, step two. `done` counts the clicks so far: the Custom scopes
+/// menu opened, then All - Read picked, which ticks Read on every scope. `dy`
+/// scrolls the page. `generate` makes Generate credential the target, with the
+/// clicks landed on it. `menu` opens the Custom scopes menu, with the clicks
+/// landed so far; the second one lights All - Read.
+fn scopes_page(
+    m: &Mini,
+    dy: f32,
+    done: usize,
+    generate: Option<usize>,
+    menu: Option<usize>,
+) -> Vec<Pos2> {
     let (x, w) = m.col();
     let y = |v: f32| v + dy;
+    let all_read = done >= 2;
     m.bold(x, y(10.0), "New credential", 15.0, INK);
     stepper(m, x, y(40.0), 2);
     let card = m.rect(x, y(54.0), w, 34.0);
@@ -598,58 +569,56 @@ fn scopes_page(m: &Mini, dy: f32, done: usize, generate: Option<usize>) -> Vec<P
         8.0,
         DIM,
     );
-    let dd = m.rect(x + w - 98.0, y(62.0), 88.0, 18.0);
+    let dd = m.rect(x + w - 108.0, y(62.0), 98.0, 18.0);
     m.field(dd);
-    m.text(dd.left() - m.o.x + 8.0, y(66.0), "Custom scopes", 8.5, INK);
+    let choice = if all_read {
+        "All - Read"
+    } else {
+        "Custom scopes"
+    };
+    m.text(dd.left() - m.o.x + 8.0, y(66.0), choice, 8.5, INK);
     m.chevron(dd.right() - m.o.x - 9.0, y(71.0), true);
 
-    let mut targets = Vec::new();
     let mut row_y = y(100.0);
-    let section = |ry: f32, label: &str, open: bool| -> Rect {
+    let section = |ry: f32, label: &str, open: bool| {
         m.chevron(x + 3.0, ry + 6.0, open);
-        m.text(x + 12.0, ry, label, 9.5, INK)
+        m.text(x + 12.0, ry, label, 9.5, INK);
     };
-    section(row_y, "General", false);
-    row_y += 18.0;
-    let open = done >= 1;
-    let dev = section(row_y, "Devices", open);
-    targets.push(dev.center());
-    row_y += 18.0;
-    let read_x = x + w - 104.0;
+    section(row_y, "General", true);
+    row_y += 16.0;
     let rows = [
-        ("Core", "Read and modify device details"),
-        ("Posture attributes", "Read and modify posture attributes"),
-        ("Routes", "Approve subnet routes and exit nodes"),
+        ("DNS", "Read or modify DNS settings."),
+        ("Policy File", "Read or modify tailnet policy file."),
+        ("Users", "Read user information or modify user roles."),
+        ("Tailnets", "Read or create tailnets via API."),
+        ("Services", "Read or modify services and their properties."),
+        ("OAuth applications", "Read or modify OAuth applications."),
     ];
     let box_h = rows.len() as f32 * 24.0;
     let b = m.rect(x, row_y, w, box_h);
-    if open {
-        m.p.rect_stroke(b, 5.0, Stroke::new(1.0, LINE), StrokeKind::Inside);
-        for (i, (name, line)) in rows.iter().enumerate() {
-            let ry = row_y + i as f32 * 24.0;
-            if i > 0 {
-                m.p.hline(b.x_range(), m.o.y + ry, Stroke::new(1.0, LINE));
-            }
-            m.bold(x + 10.0, ry + 3.0, name, 8.5, INK);
-            m.text(x + 10.0, ry + 13.0, line, 7.5, DIM);
-            let on = i < 2 && done >= i + 2;
-            let cb = m.checkbox(read_x, ry + 7.0, on);
-            m.text(
-                read_x + 14.0,
-                ry + 6.0,
-                "Read",
-                8.5,
-                if on { INK } else { DIM },
-            );
-            m.checkbox(read_x + 50.0, ry + 7.0, false);
-            m.text(read_x + 64.0, ry + 6.0, "Write", 8.5, DIM);
-            if i < 2 {
-                targets.push(cb.center());
-            }
+    m.p.rect_stroke(b, 5.0, Stroke::new(1.0, LINE), StrokeKind::Inside);
+    let read_x = x + w - 104.0;
+    for (i, (name, line)) in rows.iter().enumerate() {
+        let ry = row_y + i as f32 * 24.0;
+        if i > 0 {
+            m.p.hline(b.x_range(), m.o.y + ry, Stroke::new(1.0, LINE));
         }
-        row_y += box_h + 10.0;
+        m.bold(x + 10.0, ry + 3.0, name, 8.5, INK);
+        m.text(x + 10.0, ry + 13.0, line, 7.5, DIM);
+        // All - Read ticks Read everywhere and locks it, as the console does.
+        m.checkbox(read_x, ry + 7.0, all_read);
+        m.text(read_x + 14.0, ry + 6.0, "Read", 8.5, DIM);
+        m.checkbox(read_x + 50.0, ry + 7.0, false);
+        m.text(
+            read_x + 64.0,
+            ry + 6.0,
+            "Write",
+            8.5,
+            if all_read { DIM } else { INK },
+        );
     }
-    for label in ["Keys", "Logging", "Settings"] {
+    row_y += box_h + 10.0;
+    for label in ["Devices", "Keys", "Logging", "Settings"] {
         section(row_y, label, false);
         row_y += 18.0;
     }
@@ -664,13 +633,49 @@ fn scopes_page(m: &Mini, dy: f32, done: usize, generate: Option<usize>) -> Vec<P
         m.pressed(g, pressed > 0);
         return vec![g.center()];
     }
+
+    // The menu, open between the two clicks, over the rows below it.
+    let open = menu.is_some();
+    let lit = if menu == Some(2) { 2 } else { 0 };
+    let menu = m.rect(dd.right() - m.o.x - 140.0, y(84.0), 140.0, 120.0);
+    if open {
+        m.p.rect_filled(menu, 6.0, Color32::from_rgb(36, 35, 35));
+        m.p.rect_stroke(menu, 6.0, Stroke::new(1.0, LINE), StrokeKind::Inside);
+    }
+    let mut targets = vec![dd.center()];
+    for (i, (title, line)) in [
+        ("Custom scopes", "Pick and choose your own access"),
+        ("All - Read & Write", "Complete access to all endpoints"),
+        ("All - Read", "Read access to all endpoints"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let item = Rect::from_min_size(
+            menu.min + vec2(4.0, 4.0 + i as f32 * 38.0),
+            vec2(menu.width() - 8.0, 36.0),
+        );
+        if i == 2 {
+            targets.push(item.center());
+        }
+        if !open {
+            continue;
+        }
+        if i == lit {
+            m.p.rect_filled(item, 4.0, FIELD);
+        }
+        let ix = item.left() - m.o.x + 8.0;
+        let iy = item.top() - m.o.y;
+        m.text(ix, iy + 6.0, title, 9.0, INK);
+        m.text(ix, iy + 19.0, line, 7.5, DIM);
+    }
     targets
 }
 
 /// Credential created: the one moment the secret is shown in full.
 fn created_modal(m: &Mini, done: usize) -> Vec<Pos2> {
     let w = 270.0;
-    let x = SIDEBAR + (m.w - SIDEBAR - w) / 2.0;
+    let x = (m.w - w) / 2.0;
     let r = m.rect(x, 14.0, w, 168.0);
     m.p.rect_filled(r, 7.0, Color32::from_rgb(36, 35, 35));
     m.p.rect_stroke(r, 7.0, Stroke::new(1.0, LINE), StrokeKind::Inside);
@@ -694,14 +699,14 @@ fn created_modal(m: &Mini, done: usize) -> Vec<Pos2> {
     m.bold(ix, 72.0, "Client ID", 8.5, INK);
     let id = m.rect(ix, 85.0, fw, 20.0);
     m.field(id);
-    m.mono(ix + 8.0, 90.0, "k7Qd2mVx9F11CNTRL", INK);
+    m.mono(ix + 8.0, 90.0, "kXXXXXXXXX11CNTRL", INK);
     m.bold(ix, 112.0, "Client secret", 8.5, INK);
     let sec = m.rect(ix, 125.0, fw, 20.0);
     m.field(sec);
     m.mono(
         ix + 8.0,
         130.0,
-        "tskey-client-k7Qd2mVx9F11CNTRL-\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}",
+        "tskey-client-kXXXXXXXXX11CNTRL-XXXXXX",
         INK,
     );
     let copied = done > 0;
