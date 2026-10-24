@@ -37,5 +37,5 @@ A device only receives the packet filter for its own inbound traffic, so the gra
 
 `TSDU_SHOT=out.png` renders for `TSDU_DELAY` seconds (default 6), writes a PNG of the window and
 quits. `TSDU_VIEW=graph|taildrop` picks the view, `TSDU_SELECT=<device>` opens a device, and
-`TSDU_PING=1` pings it first, and `TSDU_PAN_AT=<seconds>` throws the graph camera off screen
+`TSDU_PING=1` pings it first. `TSDU_PAN_AT=<seconds>` throws the graph camera off screen
 at that moment to test that it returns.

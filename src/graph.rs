@@ -23,6 +23,7 @@ pub struct GraphState {
     pub hovered: Option<String>,
     /// Test hook state: `TSDU_PAN_AT=<seconds>` throws the camera off screen once.
     test_pan_done: bool,
+    test_pan_at: Option<Option<f64>>,
 }
 
 /// Pan and zoom, each driven by a spring toward a target so recentering glides.
@@ -63,6 +64,8 @@ impl Camera {
 const NODE_R: f32 = 20.0;
 /// How long the graph may sit fully off screen before the camera brings it back.
 const RETURN_AFTER: f64 = 1.0;
+/// Height kept clear for the legend in the bottom left corner.
+const LEGEND_H: f32 = 142.0;
 
 /// Peers sit on a ring around this device. Devices of the same kind (owner, or tag
 /// set) are seeded next to each other so their shared links stay short.
@@ -71,10 +74,18 @@ fn ring_radius(peers: usize) -> f32 {
 }
 
 impl GraphState {
-    fn step(&mut self, ids: &[String], center: &[bool], order: &[usize], dt: f32) -> f32 {
+    fn step(
+        &mut self,
+        ids: &[String],
+        center: &[bool],
+        order: impl FnOnce() -> Vec<usize>,
+        dt: f32,
+    ) -> f32 {
         let n = ids.len();
         let peers = center.iter().filter(|c| !**c).count();
         let ring = ring_radius(peers);
+        let seeding = ids.iter().any(|id| !self.pos.contains_key(id));
+        let order = if seeding { order() } else { Vec::new() };
         for (slot, &i) in order.iter().enumerate() {
             let id = &ids[i];
             if !self.pos.contains_key(id) {
@@ -148,16 +159,20 @@ pub fn show(
         .map(|(i, s)| (s.as_str(), i))
         .collect();
     let center: Vec<bool> = nodes.iter().map(|n| n.is_self).collect();
-    let mut order: Vec<usize> = (0..nodes.len()).collect();
-    order.sort_by_key(|&i| {
-        let n = nodes[i];
-        let kind = if n.tags.is_empty() {
-            format!("0{}", n.user_login)
-        } else {
-            format!("1{}", n.tags.join(","))
-        };
-        (!n.is_self, kind, n.name.clone())
-    });
+    // Seeding order for new nodes: owner devices first, then tag sets.
+    let order = || {
+        let mut order: Vec<usize> = (0..nodes.len()).collect();
+        order.sort_by_key(|&i| {
+            let n = nodes[i];
+            let kind = if n.tags.is_empty() {
+                format!("0{}", n.user_login)
+            } else {
+                format!("1{}", n.tags.join(","))
+            };
+            (!n.is_self, kind, n.name.clone())
+        });
+        order
+    };
 
     // One visual edge per pair, with its direction.
     struct Edge {
@@ -207,10 +222,57 @@ pub fn show(
     painter.rect_filled(rect, 0.0, BG);
     let dt = ui.input(|i| i.stable_dt).min(0.05);
     let now = ui.input(|i| i.time);
-    let energy = st.step(&ids, &center, &order, dt);
-
-    // Hit-testing uses last frame's camera, which is what the user is looking at.
+    let energy = st.step(&ids, &center, order, dt);
     let node_r = |zoom: f32| NODE_R * zoom.clamp(0.6, 1.6);
+
+    // Camera first, so hit-testing below runs against what gets drawn. Free while
+    // the user steers it, but once the whole graph has been off screen for a
+    // moment with nothing held, it springs back home.
+    let at = *st.test_pan_at.get_or_insert_with(|| {
+        std::env::var("TSDU_PAN_AT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+    });
+    if !st.test_pan_done
+        && let Some(at) = at
+        && now >= at
+    {
+        st.test_pan_done = true;
+        st.cam.pan += vec2(2500.0, 0.0);
+        st.cam.stop();
+        st.manual = true;
+        st.last_input = now;
+    }
+    let mut bb = Rect::NOTHING;
+    for id in &ids {
+        bb.extend_with(st.pos[id].to_pos2());
+    }
+    // On screen, the graph is its node boxes plus everything between them, so
+    // zooming into the empty middle of the ring still counts as in view.
+    let on_screen = Rect::from_min_max(
+        rect.center() + st.cam.pan + bb.min.to_vec2() * st.cam.zoom,
+        rect.center() + st.cam.pan + bb.max.to_vec2() * st.cam.zoom,
+    )
+    .expand(node_r(st.cam.zoom));
+    let in_view = ids.is_empty() || rect.expand(-4.0).intersects(on_screen);
+    let holding = ui.input(|i| i.pointer.any_down());
+    if st.manual && !in_view && !holding && now - st.last_input > RETURN_AFTER {
+        st.manual = false;
+    }
+    let mut camera_moving = false;
+    // A node being dragged moves the fit target; hold the camera still meanwhile.
+    if !st.manual && !ids.is_empty() && st.dragging.is_none() {
+        // Fit into the canvas above the legend strip, with room for the labels that
+        // hang under each node and spread past it sideways.
+        let avail = vec2(rect.width() - 60.0, rect.height() - LEGEND_H - 40.0);
+        let span = bb.size() + vec2(150.0, 90.0);
+        let fit = (avail.x / span.x).min(avail.y / span.y).clamp(0.4, 1.4);
+        // Labels make the drawn graph bottom heavy, so aim a little below its middle.
+        let look = bb.center().to_vec2() + vec2(0.0, 20.0);
+        let pan = -look * fit + vec2(0.0, -LEGEND_H / 2.0 + 10.0);
+        camera_moving = st.cam.spring_to(pan, fit, dt);
+    }
+
     let origin = rect.center() + st.cam.pan;
     let pointer = ui.input(|i| i.pointer.hover_pos());
     let hit = pointer.and_then(|p| {
@@ -270,53 +332,13 @@ pub fn show(
         });
     }
 
-    if !st.test_pan_done
-        && let Some(at) = std::env::var("TSDU_PAN_AT")
-            .ok()
-            .and_then(|s| s.parse::<f64>().ok())
-        && now >= at
-    {
-        st.test_pan_done = true;
-        st.cam.pan += vec2(2500.0, 0.0);
-        st.cam.stop();
-        st.manual = true;
-        st.last_input = now;
-    }
-
-    // Camera. Free while the user steers it, but once the whole graph has been off
-    // screen for a moment with nothing held, it springs back home.
-    let any_visible = ids.iter().any(|id| {
-        let p = origin + st.pos[id] * st.cam.zoom;
-        rect.expand(-4.0).intersects(Rect::from_center_size(
-            p,
-            Vec2::splat(node_r(st.cam.zoom) * 2.0),
-        ))
-    });
-    let holding = ui.input(|i| i.pointer.any_down());
-    if st.manual && !any_visible && !holding && now - st.last_input > RETURN_AFTER {
-        st.manual = false;
-    }
-    let mut camera_moving = false;
-    if !st.manual && !ids.is_empty() {
-        let mut bb = Rect::NOTHING;
-        for id in &ids {
-            bb.extend_with(st.pos[id].to_pos2());
-        }
-        // Fit into the canvas above the legend strip, with room for the labels that
-        // hang under each node and spread past it sideways.
-        const LEGEND_H: f32 = 120.0;
-        let avail = vec2(rect.width() - 60.0, rect.height() - LEGEND_H - 40.0);
-        let span = bb.size() + vec2(150.0, 90.0);
-        let fit = (avail.x / span.x).min(avail.y / span.y).clamp(0.4, 1.4);
-        // Labels make the drawn graph bottom heavy, so aim a little below its middle.
-        let look = bb.center().to_vec2() + vec2(0.0, 20.0);
-        let pan = -look * fit + vec2(0.0, -LEGEND_H / 2.0 + 10.0);
-        camera_moving = st.cam.spring_to(pan, fit, dt);
-    }
-
     let origin = rect.center() + st.cam.pan;
     let zoom = st.cam.zoom;
-    let grid = 28.0 * zoom;
+    // Dot grid backdrop, thinned when zoomed out so it never turns into a carpet.
+    let mut grid = 28.0 * zoom;
+    while grid < 18.0 {
+        grid *= 2.0;
+    }
     let gx0 = ((rect.left() - origin.x) / grid).floor() as i32;
     let gy0 = ((rect.top() - origin.y) / grid).floor() as i32;
     for gx in gx0..=gx0 + (rect.width() / grid) as i32 + 1 {
@@ -511,7 +533,7 @@ pub fn show(
     }
 
     // A pending return home needs frames to notice the delay running out.
-    let waiting_home = st.manual && !any_visible;
+    let waiting_home = st.manual && !in_view;
     if energy > 0.3 || animating || camera_moving || waiting_home || st.dragging.is_some() {
         ui.ctx().request_repaint();
     }
@@ -529,8 +551,8 @@ fn arrow(painter: &egui::Painter, tip: Pos2, dir: Vec2, col: Color32, size: f32)
 
 fn legend(painter: &egui::Painter, rect: Rect) {
     let x = rect.left() + 18.0;
-    let mut y = rect.bottom() - 98.0;
-    let box_r = Rect::from_min_size(pos2(x - 10.0, y - 12.0), vec2(320.0, 100.0));
+    let mut y = rect.bottom() - 120.0;
+    let box_r = Rect::from_min_size(pos2(x - 10.0, y - 12.0), vec2(320.0, 122.0));
     painter.rect_filled(box_r, 10.0, PANEL.gamma_multiply(0.92));
     painter.rect_stroke(
         box_r,
@@ -571,6 +593,18 @@ fn legend(painter: &egui::Painter, rect: Rect) {
             );
         },
         "one way, toward the device that can be reached",
+    );
+    y += 22.0;
+    row(
+        y,
+        &|a, _| {
+            let p = a + vec2(19.0, 0.0);
+            painter.line_segment(
+                [p - vec2(0.0, 6.0), p + vec2(0.0, 6.0)],
+                Stroke::new(2.0, RED),
+            );
+        },
+        "blocked side, shown for the focused device",
     );
     y += 22.0;
     row(
