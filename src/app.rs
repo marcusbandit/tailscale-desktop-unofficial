@@ -857,8 +857,14 @@ impl App {
     fn top_bar(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Tailscale").heading());
-            if let Some(s) = &self.snap {
+            let (r, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
+            paint_mark(ui.painter(), r);
+            ui.add_space(4.0);
+            ui.label(RichText::new("Tailscale Desktop").heading());
+            chip(ui, "unofficial", MUTED);
+            // The account and version give way first when the window is narrow.
+            let roomy = ui.available_width() > 720.0;
+            if let Some(s) = self.snap.as_ref().filter(|_| roomy) {
                 ui.add_space(4.0);
                 ui.label(RichText::new(&s.tailnet).color(MUTED));
                 ui.add_space(6.0);

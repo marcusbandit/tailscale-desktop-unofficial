@@ -155,6 +155,26 @@ pub fn paint_badge(
     );
 }
 
+/// Tailscale's mark, a 3x3 grid of dots with a solid T, marked as unofficial by
+/// lighting the top right dot in this app's accent. Same drawing as assets/mark.svg.
+pub fn paint_mark(painter: &egui::Painter, rect: egui::Rect) {
+    let step = rect.width() / 3.0;
+    let r = step * 0.37;
+    for row in 0..3 {
+        for col in 0..3 {
+            let c = rect.min + egui::vec2((col as f32 + 0.5) * step, (row as f32 + 0.5) * step);
+            let fill = if row == 0 && col == 2 {
+                ACCENT
+            } else if row == 1 || (row == 2 && col == 1) {
+                TEXT
+            } else {
+                TEXT.gamma_multiply(0.22)
+            };
+            painter.circle_filled(c, r, fill);
+        }
+    }
+}
+
 fn font_file(pattern: &str) -> Option<Vec<u8>> {
     let out = Command::new("fc-match")
         .args(["-f", "%{file}", pattern])

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Tailscale Desktop (unofficial)
+GenericName=Tailscale client
+Comment=Unofficial desktop app for Tailscale: devices, access graph, ping and Taildrop
+Exec=tailscale-desktop
+Icon=tailscale-desktop-unofficial
+Terminal=false
+Categories=Network;
+Keywords=tailscale;vpn;tailnet;taildrop;
+StartupWMClass=tailscale-desktop-unofficial
