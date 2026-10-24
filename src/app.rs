@@ -1000,11 +1000,11 @@ impl App {
             4.5,
             if n.online { GREEN } else { FAINT },
         );
-        p.text(
+        paint_icon(
+            &p,
             egui::pos2(inner.left() + 28.0, inner.center().y),
-            Align2::CENTER_CENTER,
             os_icon(&n.os),
-            FontId::proportional(18.0),
+            18.0,
             if n.online { TEXT } else { MUTED },
         );
 

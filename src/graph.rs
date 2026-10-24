@@ -15,25 +15,89 @@ pub struct GraphState {
     pos: HashMap<String, Vec2>,
     vel: HashMap<String, Vec2>,
     dragging: Option<String>,
+    cam: Camera,
+    /// Set once the user pans or zooms; until then the camera keeps fitting the graph.
+    manual: bool,
+    /// When the pointer last moved the camera, for the return-home delay.
+    last_input: f64,
+    pub hovered: Option<String>,
+    /// Test hook state: `TSDU_PAN_AT=<seconds>` throws the camera off screen once.
+    test_pan_done: bool,
+    test_pan_at: Option<Option<f64>>,
+}
+
+/// Pan and zoom, each driven by a spring toward a target so recentering glides.
+#[derive(Default)]
+struct Camera {
     pan: Vec2,
     zoom: f32,
-    /// Set once the user pans or zooms; until then the view keeps fitting the graph.
-    manual: bool,
-    pub hovered: Option<String>,
+    pan_vel: Vec2,
+    zoom_vel: f32,
+}
+
+impl Camera {
+    fn spring_to(&mut self, pan: Vec2, zoom: f32, dt: f32) -> bool {
+        // Slightly underdamped, so a long return ends with a small settle.
+        const W: f32 = 9.0;
+        const ZETA: f32 = 0.8;
+        let steps = (dt / 0.004).ceil().max(1.0) as usize;
+        let h = dt / steps as f32;
+        for _ in 0..steps {
+            let a = (pan - self.pan) * W * W - self.pan_vel * 2.0 * ZETA * W;
+            self.pan_vel += a * h;
+            self.pan += self.pan_vel * h;
+            let az = (zoom - self.zoom) * W * W - self.zoom_vel * 2.0 * ZETA * W;
+            self.zoom_vel += az * h;
+            self.zoom += self.zoom_vel * h;
+        }
+        (pan - self.pan).length() > 0.5
+            || self.pan_vel.length() > 1.0
+            || (zoom - self.zoom).abs() > 0.002
+    }
+
+    fn stop(&mut self) {
+        self.pan_vel = Vec2::ZERO;
+        self.zoom_vel = 0.0;
+    }
 }
 
 const NODE_R: f32 = 20.0;
+/// How long the graph may sit fully off screen before the camera brings it back.
+const RETURN_AFTER: f64 = 1.0;
+/// Height kept clear for the legend in the bottom left corner.
+const LEGEND_H: f32 = 142.0;
 
-fn seed(i: usize, n: usize) -> Vec2 {
-    let a = i as f32 / n.max(1) as f32 * std::f32::consts::TAU;
-    vec2(a.cos(), a.sin()) * 220.0
+/// Peers sit on a ring around this device. Devices of the same kind (owner, or tag
+/// set) are seeded next to each other so their shared links stay short.
+fn ring_radius(peers: usize) -> f32 {
+    (peers as f32 * 34.0).clamp(150.0, 340.0)
 }
 
 impl GraphState {
-    fn step(&mut self, ids: &[String], links: &[(usize, usize)], dt: f32) -> f32 {
+    fn step(
+        &mut self,
+        ids: &[String],
+        center: &[bool],
+        order: impl FnOnce() -> Vec<usize>,
+        dt: f32,
+    ) -> f32 {
         let n = ids.len();
-        for (i, id) in ids.iter().enumerate() {
-            self.pos.entry(id.clone()).or_insert_with(|| seed(i, n));
+        let peers = center.iter().filter(|c| !**c).count();
+        let ring = ring_radius(peers);
+        let seeding = ids.iter().any(|id| !self.pos.contains_key(id));
+        let order = if seeding { order() } else { Vec::new() };
+        for (slot, &i) in order.iter().enumerate() {
+            let id = &ids[i];
+            if !self.pos.contains_key(id) {
+                let p = if center[i] {
+                    Vec2::ZERO
+                } else {
+                    let a = slot as f32 / peers.max(1) as f32 * std::f32::consts::TAU
+                        - std::f32::consts::FRAC_PI_2;
+                    vec2(a.cos(), a.sin()) * ring
+                };
+                self.pos.insert(id.clone(), p);
+            }
             self.vel.entry(id.clone()).or_default();
         }
         let p: Vec<Vec2> = ids.iter().map(|id| self.pos[id]).collect();
@@ -42,17 +106,17 @@ impl GraphState {
             for j in (i + 1)..n {
                 let d = p[i] - p[j];
                 let dist2 = d.length_sq().max(100.0);
-                let push = d.normalized() * (160000.0 / dist2);
+                let push = d.normalized() * (90000.0 / dist2);
                 f[i] += push;
                 f[j] -= push;
             }
-            f[i] -= p[i] * 0.012;
-        }
-        for &(a, b) in links {
-            let d = p[b] - p[a];
-            let pull = d.normalized() * (d.length() - 230.0) * 0.02;
-            f[a] += pull;
-            f[b] -= pull;
+            // Pull toward the center for this device, toward the ring for peers.
+            let r = p[i].length();
+            if center[i] || r < 1.0 {
+                f[i] -= p[i] * 0.08;
+            } else {
+                f[i] += p[i] / r * (ring - r) * 0.06;
+            }
         }
         let mut energy = 0.0;
         for (i, id) in ids.iter().enumerate() {
@@ -60,7 +124,7 @@ impl GraphState {
                 continue;
             }
             let v = self.vel.get_mut(id).unwrap();
-            *v = (*v + f[i] * dt * 60.0) * 0.82;
+            *v = (*v + f[i] * dt * 60.0) * 0.8;
             if v.length() > 40.0 {
                 *v = v.normalized() * 40.0;
             }
@@ -84,8 +148,8 @@ pub fn show(
     m: &Matrix,
     selected: &mut Option<String>,
 ) {
-    if st.zoom == 0.0 {
-        st.zoom = 1.0;
+    if st.cam.zoom == 0.0 {
+        st.cam.zoom = 1.0;
     }
     let nodes: Vec<&crate::ts::Node> = snap.all().collect();
     let ids: Vec<String> = nodes.iter().map(|n| n.stable_id.clone()).collect();
@@ -94,6 +158,21 @@ pub fn show(
         .enumerate()
         .map(|(i, s)| (s.as_str(), i))
         .collect();
+    let center: Vec<bool> = nodes.iter().map(|n| n.is_self).collect();
+    // Seeding order for new nodes: owner devices first, then tag sets.
+    let order = || {
+        let mut order: Vec<usize> = (0..nodes.len()).collect();
+        order.sort_by_key(|&i| {
+            let n = nodes[i];
+            let kind = if n.tags.is_empty() {
+                format!("0{}", n.user_login)
+            } else {
+                format!("1{}", n.tags.join(","))
+            };
+            (!n.is_self, kind, n.name.clone())
+        });
+        order
+    };
 
     // One visual edge per pair, with its direction.
     struct Edge {
@@ -137,50 +216,69 @@ pub fn show(
             }
         }
     }
-    let links: Vec<(usize, usize)> = edges.iter().map(|e| (e.a, e.b)).collect();
 
     let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
     let rect = resp.rect;
     painter.rect_filled(rect, 0.0, BG);
-    // Dot grid backdrop.
-    if !st.manual && !ids.is_empty() {
-        let mut bb = Rect::NOTHING;
-        for id in &ids {
-            if let Some(p) = st.pos.get(id) {
-                bb.extend_with(p.to_pos2());
-            }
-        }
-        if bb.is_positive() || bb.width() > 0.0 {
-            let fit = ((rect.width() - 220.0) / bb.width().max(1.0))
-                .min((rect.height() - 200.0) / bb.height().max(1.0))
-                .clamp(0.4, 1.8);
-            let pan = -(bb.center().to_vec2()) * fit + vec2(0.0, -10.0);
-            st.zoom += (fit - st.zoom) * 0.15;
-            st.pan += (pan - st.pan) * 0.15;
-        }
-    }
-    let grid = 28.0 * st.zoom;
-    let origin = rect.center() + st.pan;
-    let gx0 = ((rect.left() - origin.x) / grid).floor() as i32;
-    let gy0 = ((rect.top() - origin.y) / grid).floor() as i32;
-    for gx in gx0..=gx0 + (rect.width() / grid) as i32 + 1 {
-        for gy in gy0..=gy0 + (rect.height() / grid) as i32 + 1 {
-            let p = origin + vec2(gx as f32, gy as f32) * grid;
-            if rect.contains(p) {
-                painter.circle_filled(p, 1.0, Color32::from_rgb(0x1d, 0x21, 0x29));
-            }
-        }
-    }
-
     let dt = ui.input(|i| i.stable_dt).min(0.05);
-    let energy = st.step(&ids, &links, dt);
-    let to_screen = |v: Vec2, st: &GraphState| origin + v * st.zoom;
-    let screen: Vec<Pos2> = ids.iter().map(|id| to_screen(st.pos[id], st)).collect();
+    let now = ui.input(|i| i.time);
+    let energy = st.step(&ids, &center, order, dt);
+    let node_r = |zoom: f32| NODE_R * zoom.clamp(0.6, 1.6);
 
-    // Hit-testing.
+    // Camera first, so hit-testing below runs against what gets drawn. Free while
+    // the user steers it, but once the whole graph has been off screen for a
+    // moment with nothing held, it springs back home.
+    let at = *st.test_pan_at.get_or_insert_with(|| {
+        std::env::var("TSDU_PAN_AT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+    });
+    if !st.test_pan_done
+        && let Some(at) = at
+        && now >= at
+    {
+        st.test_pan_done = true;
+        st.cam.pan += vec2(2500.0, 0.0);
+        st.cam.stop();
+        st.manual = true;
+        st.last_input = now;
+    }
+    let mut bb = Rect::NOTHING;
+    for id in &ids {
+        bb.extend_with(st.pos[id].to_pos2());
+    }
+    // On screen, the graph is its node boxes plus everything between them, so
+    // zooming into the empty middle of the ring still counts as in view.
+    let on_screen = Rect::from_min_max(
+        rect.center() + st.cam.pan + bb.min.to_vec2() * st.cam.zoom,
+        rect.center() + st.cam.pan + bb.max.to_vec2() * st.cam.zoom,
+    )
+    .expand(node_r(st.cam.zoom));
+    let in_view = ids.is_empty() || rect.expand(-4.0).intersects(on_screen);
+    let holding = ui.input(|i| i.pointer.any_down());
+    if st.manual && !in_view && !holding && now - st.last_input > RETURN_AFTER {
+        st.manual = false;
+    }
+    let mut camera_moving = false;
+    // A node being dragged moves the fit target; hold the camera still meanwhile.
+    if !st.manual && !ids.is_empty() && st.dragging.is_none() {
+        // Fit into the canvas above the legend strip, with room for the labels that
+        // hang under each node and spread past it sideways.
+        let avail = vec2(rect.width() - 60.0, rect.height() - LEGEND_H - 40.0);
+        let span = bb.size() + vec2(150.0, 90.0);
+        let fit = (avail.x / span.x).min(avail.y / span.y).clamp(0.4, 1.4);
+        // Labels make the drawn graph bottom heavy, so aim a little below its middle.
+        let look = bb.center().to_vec2() + vec2(0.0, 20.0);
+        let pan = -look * fit + vec2(0.0, -LEGEND_H / 2.0 + 10.0);
+        camera_moving = st.cam.spring_to(pan, fit, dt);
+    }
+
+    let origin = rect.center() + st.cam.pan;
     let pointer = ui.input(|i| i.pointer.hover_pos());
     let hit = pointer.and_then(|p| {
-        (0..ids.len()).find(|&i| screen[i].distance(p) < NODE_R * st.zoom.max(0.6) + 4.0)
+        (0..ids.len()).find(|&i| {
+            (origin + st.pos[&ids[i]] * st.cam.zoom).distance(p) < node_r(st.cam.zoom) + 4.0
+        })
     });
     st.hovered = hit.map(|i| ids[i].clone());
 
@@ -191,12 +289,14 @@ pub fn show(
         let d = resp.drag_delta();
         match &st.dragging {
             Some(id) => {
-                *st.pos.get_mut(id).unwrap() += d / st.zoom;
+                *st.pos.get_mut(id).unwrap() += d / st.cam.zoom;
                 st.vel.insert(id.clone(), Vec2::ZERO);
             }
             None => {
-                st.pan += d;
+                st.cam.pan += d;
+                st.cam.stop();
                 st.manual = true;
+                st.last_input = now;
             }
         }
     }
@@ -213,13 +313,15 @@ pub fn show(
         let zoom_delta = ui.input(|i| i.zoom_delta());
         let scroll = ui.input(|i| i.smooth_scroll_delta.y);
         let factor = zoom_delta * (scroll * 0.0015).exp();
-        if factor != 1.0 {
-            if let Some(p) = pointer {
-                let before = (p - origin) / st.zoom;
-                st.zoom = (st.zoom * factor).clamp(0.35, 2.5);
-                st.manual = true;
-                st.pan += (p - origin) - before * st.zoom;
-            }
+        if factor != 1.0
+            && let Some(p) = pointer
+        {
+            let before = (p - origin) / st.cam.zoom;
+            st.cam.zoom = (st.cam.zoom * factor).clamp(0.35, 2.5);
+            st.cam.pan += (p - origin) - before * st.cam.zoom;
+            st.cam.stop();
+            st.manual = true;
+            st.last_input = now;
         }
     }
     if hit.is_some() {
@@ -230,35 +332,55 @@ pub fn show(
         });
     }
 
+    let origin = rect.center() + st.cam.pan;
+    let zoom = st.cam.zoom;
+    // Dot grid backdrop, thinned when zoomed out so it never turns into a carpet.
+    let mut grid = 28.0 * zoom;
+    while grid < 18.0 {
+        grid *= 2.0;
+    }
+    let gx0 = ((rect.left() - origin.x) / grid).floor() as i32;
+    let gy0 = ((rect.top() - origin.y) / grid).floor() as i32;
+    for gx in gx0..=gx0 + (rect.width() / grid) as i32 + 1 {
+        for gy in gy0..=gy0 + (rect.height() / grid) as i32 + 1 {
+            let p = origin + vec2(gx as f32, gy as f32) * grid;
+            if rect.contains(p) {
+                painter.circle_filled(p, 1.0, Color32::from_rgb(0x1d, 0x21, 0x29));
+            }
+        }
+    }
+    let screen: Vec<Pos2> = ids.iter().map(|id| origin + st.pos[id] * zoom).collect();
+
     let focus = st.hovered.clone().or(selected.clone());
     let focus_i = focus.as_ref().and_then(|f| idx.get(f.as_str()).copied());
     let t = ui.input(|i| i.time) as f32;
 
-    // Edges.
+    // Edges. At rest every link is the same quiet line and a one-way link only
+    // carries a small arrowhead; direction and blocking get loud for the device
+    // under focus.
+    let mut animating = false;
     for e in &edges {
         let (pa, pb) = (screen[e.a], screen[e.b]);
         let dir = (pb - pa).normalized();
         // Same radius the nodes are drawn with; tagged squares reach a bit further.
-        let rad = |i: usize| {
-            NODE_R * st.zoom.clamp(0.6, 1.6) * if nodes[i].tags.is_empty() { 1.0 } else { 1.15 }
-        };
+        let rad = |i: usize| node_r(zoom) * if nodes[i].tags.is_empty() { 1.0 } else { 1.15 };
         let (s, d) = (pa + dir * (rad(e.a) + 3.0), pb - dir * (rad(e.b) + 4.0));
-        let touches = focus_i.is_none_or(|f| f == e.a || f == e.b);
-        let base = match e.kind {
-            Kind::Both => Color32::from_rgb(0x4a, 0x55, 0x68),
-            Kind::OneWay => AMBER,
-        };
-        let mut alpha = if touches { 1.0 } else { 0.12 };
-        if e.weak {
-            alpha *= if e.kind == Kind::Both { 0.45 } else { 0.75 };
+        if (d - s).dot(dir) <= 0.0 {
+            continue;
         }
-        let col = base.gamma_multiply(alpha);
-        let width = if e.kind == Kind::OneWay { 2.0 } else { 1.4 }
-            * if touches && focus_i.is_some() {
-                1.4
-            } else {
-                1.0
-            };
+        let lit = focus_i.is_some_and(|f| f == e.a || f == e.b);
+        let faded = focus_i.is_some() && !lit;
+        let col = match (lit, e.kind) {
+            (true, Kind::OneWay) => AMBER,
+            (true, Kind::Both) => Color32::from_rgb(0x8d, 0x99, 0xab),
+            _ => EDGE,
+        };
+        let mut alpha = if faded { 0.1 } else { 1.0 };
+        if e.weak && !lit {
+            alpha *= 0.5;
+        }
+        let col = col.gamma_multiply(alpha);
+        let width = if lit { 2.0 } else { 1.2 };
         if e.weak {
             painter.extend(Shape::dashed_line(
                 &[s, d],
@@ -269,12 +391,15 @@ pub fn show(
         } else {
             painter.line_segment([s, d], Stroke::new(width, col));
         }
+        // Direction marks sit mid-line, where node labels never cover them.
+        let mid = s + (d - s) * 0.55;
         match e.kind {
-            Kind::OneWay => {
-                arrow(&painter, d, dir, col, 11.0);
+            Kind::OneWay if lit => {
+                arrow(&painter, mid + dir * 6.0, dir, col, 12.0);
                 // Packets flowing in the allowed direction.
                 let len = (d - s).length();
                 if len > 30.0 {
+                    animating = true;
                     for k in 0..3 {
                         let f = ((t * 0.45 + k as f32 / 3.0) % 1.0) * len;
                         painter.circle_filled(s + dir * f, 2.6, col);
@@ -284,25 +409,26 @@ pub fn show(
                     // Blocked direction: a small bar at the source end.
                     let n = vec2(-dir.y, dir.x);
                     let p = s + dir * 10.0;
-                    painter.line_segment(
-                        [p - n * 6.0, p + n * 6.0],
-                        Stroke::new(2.0, RED.gamma_multiply(alpha)),
-                    );
+                    painter.line_segment([p - n * 6.0, p + n * 6.0], Stroke::new(2.0, RED));
                 }
             }
-            Kind::Both => {
-                if focus_i.is_some() && touches {
-                    arrow(&painter, d, dir, col, 8.0);
-                    arrow(&painter, s, -dir, col, 8.0);
-                }
+            Kind::OneWay => {
+                arrow(
+                    &painter,
+                    mid + dir * 4.0,
+                    dir,
+                    AMBER.gamma_multiply(0.75 * alpha),
+                    8.0,
+                );
             }
+            Kind::Both => {}
         }
     }
 
     // Nodes.
     for (i, n) in nodes.iter().enumerate() {
         let p = screen[i];
-        let r = NODE_R * st.zoom.clamp(0.6, 1.6);
+        let r = node_r(zoom);
         let dim = focus_i.is_some_and(|f| {
             f != i
                 && !edges
@@ -340,13 +466,7 @@ pub fn show(
             painter.circle_filled(p, r, fill.gamma_multiply(a));
             painter.circle_stroke(p, r, Stroke::new(2.0, ring.gamma_multiply(a)));
         }
-        painter.text(
-            p,
-            Align2::CENTER_CENTER,
-            os_icon(&n.os),
-            FontId::proportional(r * 0.8),
-            TEXT.gamma_multiply(a),
-        );
+        paint_icon(&painter, p, os_icon(&n.os), r * 0.9, TEXT.gamma_multiply(a));
         // Online dot.
         let dot = p + vec2(r * 0.72, -r * 0.72);
         painter.circle_filled(dot, 5.0, BG);
@@ -412,7 +532,9 @@ pub fn show(
         painter.galley(r.min + vec2(10.0, 8.0), galley, TEXT);
     }
 
-    if energy > 0.3 || edges.iter().any(|e| e.kind == Kind::OneWay) || st.dragging.is_some() {
+    // A pending return home needs frames to notice the delay running out.
+    let waiting_home = st.manual && !in_view;
+    if energy > 0.3 || animating || camera_moving || waiting_home || st.dragging.is_some() {
         ui.ctx().request_repaint();
     }
 }
@@ -429,8 +551,8 @@ fn arrow(painter: &egui::Painter, tip: Pos2, dir: Vec2, col: Color32, size: f32)
 
 fn legend(painter: &egui::Painter, rect: Rect) {
     let x = rect.left() + 18.0;
-    let mut y = rect.bottom() - 98.0;
-    let box_r = Rect::from_min_size(pos2(x - 10.0, y - 12.0), vec2(300.0, 100.0));
+    let mut y = rect.bottom() - 120.0;
+    let box_r = Rect::from_min_size(pos2(x - 10.0, y - 12.0), vec2(320.0, 122.0));
     painter.rect_filled(box_r, 10.0, PANEL.gamma_multiply(0.92));
     painter.rect_stroke(
         box_r,
@@ -453,10 +575,7 @@ fn legend(painter: &egui::Painter, rect: Rect) {
     row(
         y,
         &|a, b| {
-            painter.line_segment(
-                [a, b],
-                Stroke::new(1.6, Color32::from_rgb(0x4a, 0x55, 0x68)),
-            );
+            painter.line_segment([a, b], Stroke::new(1.4, EDGE));
         },
         "both directions",
     );
@@ -464,14 +583,28 @@ fn legend(painter: &egui::Painter, rect: Rect) {
     row(
         y,
         &|a, b| {
-            painter.line_segment([a, b], Stroke::new(2.0, AMBER));
-            arrow(painter, b, vec2(1.0, 0.0), AMBER, 9.0);
+            painter.line_segment([a, b], Stroke::new(1.4, EDGE));
+            arrow(
+                painter,
+                a + (b - a) * 0.6,
+                vec2(1.0, 0.0),
+                AMBER.gamma_multiply(0.75),
+                8.0,
+            );
+        },
+        "one way, toward the device that can be reached",
+    );
+    y += 22.0;
+    row(
+        y,
+        &|a, _| {
+            let p = a + vec2(19.0, 0.0);
             painter.line_segment(
-                [a + vec2(5.0, -5.0), a + vec2(5.0, 5.0)],
+                [p - vec2(0.0, 6.0), p + vec2(0.0, 6.0)],
                 Stroke::new(2.0, RED),
             );
         },
-        "one way: arrow = allowed, red bar = blocked",
+        "blocked side, shown for the focused device",
     );
     y += 22.0;
     row(
@@ -479,7 +612,7 @@ fn legend(painter: &egui::Painter, rect: Rect) {
         &|a, b| {
             painter.extend(Shape::dashed_line(
                 &[a, b],
-                Stroke::new(1.4, MUTED),
+                Stroke::new(1.4, EDGE),
                 6.0,
                 4.0,
             ));

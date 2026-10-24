@@ -12,6 +12,7 @@ pub const CARD: Color32 = Color32::from_rgb(0x18, 0x1c, 0x23);
 pub const CARD_HOVER: Color32 = Color32::from_rgb(0x1f, 0x24, 0x2d);
 pub const CARD_SELECTED: Color32 = Color32::from_rgb(0x1c, 0x26, 0x3a);
 pub const BORDER: Color32 = Color32::from_rgb(0x25, 0x2a, 0x33);
+pub const EDGE: Color32 = Color32::from_rgb(0x3a, 0x42, 0x50);
 pub const TEXT: Color32 = Color32::from_rgb(0xe7, 0xe9, 0xee);
 pub const MUTED: Color32 = Color32::from_rgb(0x87, 0x90, 0x9e);
 pub const FAINT: Color32 = Color32::from_rgb(0x52, 0x59, 0x66);
@@ -58,6 +59,33 @@ pub fn os_icon(os: &str) -> &'static str {
         "macOS" | "iOS" | "tvOS" => icon::APPLE,
         _ => icon::SERVER,
     }
+}
+
+/// Paints one icon glyph with its ink centered on `center`. Text layout centers the
+/// advance box, and Nerd Font glyphs sit off center inside theirs.
+pub fn paint_icon(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    glyph: &str,
+    size: f32,
+    color: Color32,
+) {
+    let g = painter.layout_no_wrap(glyph.to_owned(), FontId::proportional(size), color);
+    let mut ink = egui::Rect::NOTHING;
+    for row in &g.rows {
+        for gl in &row.row.glyphs {
+            if !gl.uv_rect.is_nothing() {
+                let min = row.pos + gl.pos.to_vec2() + gl.uv_rect.offset;
+                ink = ink.union(egui::Rect::from_min_size(min, gl.uv_rect.size));
+            }
+        }
+    }
+    let mid = if ink.is_positive() {
+        ink.center()
+    } else {
+        g.rect.center()
+    };
+    painter.galley(center - mid.to_vec2(), g, color);
 }
 
 fn font_file(pattern: &str) -> Option<Vec<u8>> {
