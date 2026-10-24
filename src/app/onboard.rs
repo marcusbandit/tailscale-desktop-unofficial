@@ -102,6 +102,9 @@ impl App {
     }
 
     fn page_welcome(&mut self, ui: &mut Ui) {
+        let (r, _) = ui.allocate_exact_size(vec2(44.0, 44.0), egui::Sense::hover());
+        paint_mark(ui.painter(), r);
+        ui.add_space(18.0);
         heading(ui, "Your tailnet, on your desktop");
         body(
             ui,
@@ -147,7 +150,13 @@ impl App {
             );
         }
 
-        ui.add_space(30.0);
+        ui.add_space(18.0);
+        note(
+            ui,
+            "Tailscale Desktop is an unofficial app, made independently and not by Tailscale. \
+             It only talks to the Tailscale already running on this machine.",
+        );
+        ui.add_space(24.0);
         let act = Cell::new(None);
         buttons(
             ui,

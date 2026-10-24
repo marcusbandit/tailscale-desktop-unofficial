@@ -1,5 +1,12 @@
 # Tailscale Desktop (unofficial)
 
+<img src="assets/icon.svg" width="96" alt="The Tailscale mark with its top right dot lit blue">
+
+**Unofficial.** This app is made independently and is not affiliated with, endorsed by or made by
+Tailscale Inc. Tailscale and the Tailscale logo are trademarks of Tailscale Inc. The logo is used
+so people can see at once what the app is for. The top right dot is lit blue to mark it as the
+unofficial one. If anyone at Tailscale wants this code, it is theirs to take.
+
 A small native Linux window for Tailscale, written in Rust with egui. It talks to the local
 `tailscaled` over its socket, so it needs no API key and no web UI.
 
@@ -19,6 +26,10 @@ What it shows and does:
 ## Run
 
     cargo run --release
+
+or install it for your user, with a desktop entry and icon:
+
+    scripts/install.sh
 
 Your user should be the Tailscale operator so changes work without root:
 

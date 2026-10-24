@@ -857,7 +857,11 @@ impl App {
     fn top_bar(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Tailscale").heading());
+            let (r, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
+            paint_mark(ui.painter(), r);
+            ui.add_space(4.0);
+            ui.label(RichText::new("Tailscale Desktop").heading());
+            chip(ui, "unofficial", MUTED);
             if let Some(s) = &self.snap {
                 ui.add_space(4.0);
                 ui.label(RichText::new(&s.tailnet).color(MUTED));
