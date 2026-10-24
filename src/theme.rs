@@ -94,6 +94,17 @@ pub struct Badge {
     pub tagged: bool,
 }
 
+impl Badge {
+    pub fn of(n: &crate::ts::Node) -> Self {
+        Self {
+            // This device is always up from its own point of view.
+            online: n.online || n.is_self,
+            me: n.is_self,
+            tagged: !n.tags.is_empty(),
+        }
+    }
+}
+
 pub const RING_OFF: Color32 = Color32::from_rgb(0x3a, 0x41, 0x4d);
 pub const ME_FILL: Color32 = Color32::from_rgb(0x16, 0x2a, 0x4d);
 

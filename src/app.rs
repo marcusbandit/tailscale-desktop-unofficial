@@ -411,7 +411,9 @@ impl App {
     fn close_onboarding(&mut self) {
         self.onboard = None;
         self.connect_attempt += 1;
-        onboard::mark_done();
+        if let Err(e) = onboard::mark_done() {
+            self.toast(format!("Could not save that the tour is done: {e}"), true);
+        }
     }
 
     fn disconnect(&mut self) {
@@ -645,12 +647,22 @@ fn step(ui: &mut Ui, n: &str, text: &str, add: impl FnOnce(&mut Ui)) {
     });
 }
 
-fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+/// This device first, then online before offline, then by name.
+fn display_order(n: &Node) -> (bool, bool, String) {
+    (!n.is_self, !n.online, n.name.to_lowercase())
+}
+
+/// The one surface style for grouped content.
+fn card_frame(margin: i8) -> Frame {
     Frame::new()
         .fill(CARD)
         .stroke(Stroke::new(1.0, BORDER))
         .corner_radius(CornerRadius::same(12))
-        .inner_margin(Margin::same(14))
+        .inner_margin(Margin::same(margin))
+}
+
+fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    card_frame(14)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             add(ui)
@@ -723,8 +735,13 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.drain();
         let ctx = ui.ctx().clone();
-        self.handle_drops(&ctx);
 
+        if self.onboard.is_some() {
+            // Escape skips the walkthrough, the same as its Skip buttons.
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.close_onboarding();
+            }
+        }
         if self.onboard.is_some() {
             egui::CentralPanel::default()
                 .frame(Frame::new().fill(BG))
@@ -736,6 +753,7 @@ impl eframe::App for App {
             ctx.request_repaint_after(Duration::from_secs(1));
             return;
         }
+        self.handle_drops(&ctx);
 
         egui::Panel::top("top")
             .frame(
@@ -1254,7 +1272,7 @@ impl App {
                 || n.os.to_lowercase().contains(&q))
         };
         let mut nodes: Vec<&Node> = s.all().filter(|n| matches(n)).collect();
-        nodes.sort_by_key(|n| (!n.is_self, !n.online, n.name.to_lowercase()));
+        nodes.sort_by_key(|n| display_order(n));
         let (on, off): (Vec<&Node>, Vec<&Node>) = nodes.into_iter().partition(|n| n.online);
 
         egui::ScrollArea::vertical()
@@ -1274,26 +1292,21 @@ impl App {
                     });
                     ui.add_space(6.0);
                     // One panel per group; rows are divided, not boxed one by one.
-                    Frame::new()
-                        .fill(CARD)
-                        .stroke(Stroke::new(1.0, BORDER))
-                        .corner_radius(CornerRadius::same(12))
-                        .inner_margin(Margin::same(4))
-                        .show(ui, |ui| {
-                            ui.spacing_mut().item_spacing.y = 0.0;
-                            let last = list.len() - 1;
-                            for (i, n) in list.into_iter().enumerate() {
-                                self.device_row(ui, &ctx, &s, n);
-                                if i != last {
-                                    let r = ui.available_rect_before_wrap();
-                                    ui.painter().hline(
-                                        r.left() + 64.0..=r.right() - 12.0,
-                                        r.top(),
-                                        Stroke::new(1.0, BORDER),
-                                    );
-                                }
+                    card_frame(4).show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        let last = list.len() - 1;
+                        for (i, n) in list.into_iter().enumerate() {
+                            self.device_row(ui, &ctx, &s, n);
+                            if i != last {
+                                let r = ui.available_rect_before_wrap();
+                                ui.painter().hline(
+                                    r.left() + 64.0..=r.right() - 12.0,
+                                    r.top(),
+                                    Stroke::new(1.0, BORDER),
+                                );
                             }
-                        });
+                        }
+                    });
                     ui.add_space(18.0);
                 }
             });
@@ -1322,11 +1335,7 @@ impl App {
             egui::pos2(inner.left() + 18.0, inner.center().y),
             17.0,
             os_icon(&n.os),
-            Badge {
-                online: n.online || n.is_self,
-                me: n.is_self,
-                tagged: !n.tags.is_empty(),
-            },
+            Badge::of(n),
             1.0,
         );
 
@@ -1423,13 +1432,17 @@ impl App {
                 (Some(false), Some(false)) => Some(("No access", RED, &out)),
                 (Some(false), _) => Some(("You can't reach it", RED, &out)),
                 (_, Some(false)) => Some(("Can't reach you", MUTED, &inn)),
+                (None, _) => Some(("Not checked yet", FAINT, &out)),
+                (_, None) => Some(("Not checked yet", FAINT, &inn)),
                 _ => None,
             };
             if let Some((text, col, a)) = note {
                 ui.scope_builder(in_row(note_r), |ui| {
                     ui.spacing_mut().item_spacing.x = 5.0;
-                    let (_, _, how) = access_text(a);
-                    ui.label(RichText::new(icon::BAN).size(12.0).color(col));
+                    let (glyph, _, how) = access_text(a);
+                    // Blocked shows the ban sign; not known yet keeps the question mark.
+                    let glyph = if glyph == "?" { glyph } else { icon::BAN };
+                    ui.label(RichText::new(glyph).size(12.0).color(col));
                     ui.label(RichText::new(text).size(12.5).color(col))
                         .on_hover_text(how);
                 });

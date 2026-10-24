@@ -6,11 +6,9 @@
 use std::cell::Cell;
 use std::path::PathBuf;
 
-use eframe::egui::{
-    self, Align, Color32, CornerRadius, Frame, Layout, Margin, RichText, Stroke, Ui, vec2,
-};
+use eframe::egui::{self, Align, Color32, Layout, Margin, RichText, Stroke, Ui, vec2};
 
-use super::{App, primary_button, step};
+use super::{App, card_frame, display_order, primary_button, step};
 use crate::osinfo::{self, OsInfo};
 use crate::theme::{icon, *};
 
@@ -31,6 +29,7 @@ enum Act {
 
 fn state_path() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
     Some(base.join("tailscale-desktop-unofficial").join("onboarded"))
@@ -49,16 +48,15 @@ pub fn first_step() -> Option<usize> {
     (!done).then_some(WELCOME)
 }
 
-pub fn mark_done() {
+pub fn mark_done() -> Result<(), String> {
     if std::env::var("TSDU_SHOT").is_ok() {
-        return;
+        return Ok(());
     }
-    if let Some(p) = state_path() {
-        if let Some(dir) = p.parent() {
-            std::fs::create_dir_all(dir).ok();
-        }
-        std::fs::write(p, "1\n").ok();
+    let p = state_path().ok_or("no home directory")?;
+    if let Some(dir) = p.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
+    std::fs::write(&p, "1\n").map_err(|e| format!("{}: {e}", p.display()))
 }
 
 impl App {
@@ -114,9 +112,9 @@ impl App {
         ui.add_space(26.0);
 
         // The user's own devices, drawn the way the app draws them everywhere.
-        if let Some(s) = self.snap.clone() {
-            let mut nodes: Vec<_> = s.all().cloned().collect();
-            nodes.sort_by_key(|n| (!n.is_self, !n.online, n.name.to_lowercase()));
+        if let Some(s) = &self.snap {
+            let mut nodes: Vec<_> = s.all().collect();
+            nodes.sort_by_key(|n| display_order(n));
             nodes.truncate(8);
             let slot = 74.0;
             let (rect, _) =
@@ -124,18 +122,7 @@ impl App {
             let x0 = rect.center().x - slot * nodes.len() as f32 / 2.0 + slot / 2.0;
             for (i, n) in nodes.iter().enumerate() {
                 let c = egui::pos2(x0 + slot * i as f32, rect.top() + 30.0);
-                paint_badge(
-                    ui.painter(),
-                    c,
-                    22.0,
-                    os_icon(&n.os),
-                    Badge {
-                        online: n.online || n.is_self,
-                        me: n.is_self,
-                        tagged: !n.tags.is_empty(),
-                    },
-                    1.0,
-                );
+                paint_badge(ui.painter(), c, 22.0, os_icon(&n.os), Badge::of(n), 1.0);
                 let name: String = if n.name.chars().count() > 10 {
                     n.name.chars().take(9).chain(['…']).collect()
                 } else {
@@ -196,7 +183,7 @@ impl App {
 
         // Before and after, with real devices: this machine as it already shows,
         // and a peer as it shows now.
-        if let Some(s) = self.snap.clone() {
+        if let Some(s) = &self.snap {
             let peer = s
                 .peers
                 .iter()
@@ -366,9 +353,6 @@ impl App {
     /// The payoff, right after connecting: what the API said about each device.
     fn page_connected(&mut self, ui: &mut Ui) {
         heading(ui, "Connected");
-        let Some(s) = self.snap.clone() else {
-            return;
-        };
         body(
             ui,
             &format!(
@@ -376,18 +360,21 @@ impl App {
                 self.os_api.len()
             ),
         );
-        ui.add_space(20.0);
-        let mut nodes: Vec<_> = s.all().cloned().collect();
-        nodes.sort_by_key(|n| (!n.is_self, !n.online, n.name.to_lowercase()));
-        panel(ui, |ui| {
-            let last = nodes.len().saturating_sub(1);
-            for (i, n) in nodes.iter().enumerate() {
-                preview_row(ui, n, &self.os_of(n), None);
-                if i != last {
-                    divider(ui);
+        // The list needs tailscaled; the way on does not.
+        if let Some(s) = &self.snap {
+            ui.add_space(20.0);
+            let mut nodes: Vec<_> = s.all().collect();
+            nodes.sort_by_key(|n| display_order(n));
+            panel(ui, |ui| {
+                let last = nodes.len().saturating_sub(1);
+                for (i, n) in nodes.iter().enumerate() {
+                    preview_row(ui, n, &self.os_of(n), None);
+                    if i != last {
+                        divider(ui);
+                    }
                 }
-            }
-        });
+            });
+        }
         ui.add_space(24.0);
         let mut next = false;
         buttons(
@@ -494,15 +481,10 @@ fn note_color(ui: &mut Ui, text: &str, color: Color32) {
 }
 
 fn panel(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
-    Frame::new()
-        .fill(CARD)
-        .stroke(Stroke::new(1.0, BORDER))
-        .corner_radius(CornerRadius::same(12))
-        .inner_margin(Margin::same(16))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            add(ui)
-        });
+    card_frame(16).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        add(ui)
+    });
 }
 
 fn divider(ui: &mut Ui) {
@@ -525,11 +507,7 @@ fn preview_row(ui: &mut Ui, n: &crate::ts::Node, os: &OsInfo, hint: Option<&str>
             r.center(),
             15.0,
             os_icon(&n.os),
-            Badge {
-                online: n.online || n.is_self,
-                me: n.is_self,
-                tagged: !n.tags.is_empty(),
-            },
+            Badge::of(n),
             1.0,
         );
         ui.add_space(8.0);

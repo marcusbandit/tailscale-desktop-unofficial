@@ -437,24 +437,14 @@ pub fn show(
         });
         let a = if dim { 0.25 } else { 1.0 };
         let tagged = !n.tags.is_empty();
-        let online = n.online || n.is_self;
+        let badge = Badge::of(n);
+        let online = badge.online;
         if selected.as_deref() == Some(&n.stable_id) || st.hovered.as_deref() == Some(&n.stable_id)
         {
             let halo = if online { GREEN } else { MUTED };
             painter.circle_filled(p, r + 11.0, halo.gamma_multiply(0.14 * a));
         }
-        paint_badge(
-            &painter,
-            p,
-            r,
-            os_icon(&n.os),
-            Badge {
-                online,
-                me: n.is_self,
-                tagged,
-            },
-            a,
-        );
+        paint_badge(&painter, p, r, os_icon(&n.os), badge, a);
         let label = if n.is_self {
             format!("{} (you)", n.name)
         } else {
