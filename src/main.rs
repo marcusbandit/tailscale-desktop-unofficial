@@ -15,8 +15,10 @@ fn main() -> eframe::Result {
         .with_app_id("tailscale-desktop-unofficial")
         .with_inner_size([1320.0, 820.0])
         .with_min_inner_size([760.0, 480.0]);
-    if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-256.png")) {
-        viewport = viewport.with_icon(icon);
+    // On Wayland the compositor takes the icon from the desktop entry instead.
+    match eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-256.png")) {
+        Ok(icon) => viewport = viewport.with_icon(icon),
+        Err(e) => eprintln!("window icon: {e}"),
     }
     let options = eframe::NativeOptions {
         viewport,

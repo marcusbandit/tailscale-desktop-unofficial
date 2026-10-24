@@ -166,9 +166,9 @@ pub fn paint_mark(painter: &egui::Painter, rect: egui::Rect) {
             let fill = if row == 0 && col == 2 {
                 ACCENT
             } else if row == 1 || (row == 2 && col == 1) {
-                Color32::from_rgb(0xf2, 0xf4, 0xf7)
+                TEXT
             } else {
-                Color32::from_rgb(0xf2, 0xf4, 0xf7).gamma_multiply(0.22)
+                TEXT.gamma_multiply(0.22)
             };
             painter.circle_filled(c, r, fill);
         }

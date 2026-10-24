@@ -1,12 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
   <rect width="256" height="256" rx="56" fill="#141821"/>
-  <circle cx="68" cy="68" r="22" fill="#f2f4f7" fill-opacity="0.22"/>
-  <circle cx="128" cy="68" r="22" fill="#f2f4f7" fill-opacity="0.22"/>
+  <circle cx="68" cy="68" r="22" fill="#e7e9ee" fill-opacity="0.22"/>
+  <circle cx="128" cy="68" r="22" fill="#e7e9ee" fill-opacity="0.22"/>
   <circle cx="188" cy="68" r="22" fill="#5b9bff" fill-opacity="1"/>
-  <circle cx="68" cy="128" r="22" fill="#f2f4f7" fill-opacity="1"/>
-  <circle cx="128" cy="128" r="22" fill="#f2f4f7" fill-opacity="1"/>
-  <circle cx="188" cy="128" r="22" fill="#f2f4f7" fill-opacity="1"/>
-  <circle cx="68" cy="188" r="22" fill="#f2f4f7" fill-opacity="0.22"/>
-  <circle cx="128" cy="188" r="22" fill="#f2f4f7" fill-opacity="1"/>
-  <circle cx="188" cy="188" r="22" fill="#f2f4f7" fill-opacity="0.22"/>
+  <circle cx="68" cy="128" r="22" fill="#e7e9ee" fill-opacity="1"/>
+  <circle cx="128" cy="128" r="22" fill="#e7e9ee" fill-opacity="1"/>
+  <circle cx="188" cy="128" r="22" fill="#e7e9ee" fill-opacity="1"/>
+  <circle cx="68" cy="188" r="22" fill="#e7e9ee" fill-opacity="0.22"/>
+  <circle cx="128" cy="188" r="22" fill="#e7e9ee" fill-opacity="1"/>
+  <circle cx="188" cy="188" r="22" fill="#e7e9ee" fill-opacity="0.22"/>
 </svg>

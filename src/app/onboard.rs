@@ -153,8 +153,11 @@ impl App {
         ui.add_space(18.0);
         note(
             ui,
-            "Tailscale Desktop is an unofficial app, made independently and not by Tailscale. \
-             It only talks to the Tailscale already running on this machine.",
+            &format!(
+                "{} is made independently and not by Tailscale. It only talks to the \
+                 Tailscale already running on this machine.",
+                crate::APP_NAME
+            ),
         );
         ui.add_space(24.0);
         let act = Cell::new(None);
