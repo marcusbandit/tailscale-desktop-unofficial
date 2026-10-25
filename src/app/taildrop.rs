@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use eframe::egui::{self, Align, Layout, Pos2, Rect, RichText, Sense, Shape, Stroke, Ui, vec2};
 
-use super::{App, Msg, bytes, files_label, icon_button, send_all};
+use super::{App, Msg, bytes, card_frame, files_label, icon_button, send_all};
 use crate::theme::{icon, *};
 use crate::ts::{self, Node};
 use crate::widgets::{self, Btn};
@@ -92,13 +92,10 @@ impl App {
             widgets::column(ui, widgets::COLUMN, |ui| {
                     widgets::page_title(ui, "Taildrop", "Send files between your devices", |_| {});
                     self.drop_zone(ui, &ctx);
-                    if !self.drop.files.is_empty() {
-                        ui.add_space(sp::M);
-                        self.staged(ui);
-                    }
-                    ui.add_space(sp::XL);
+                    ui.add_space(sp::L);
 
                     widgets::section(ui, "Send to");
+                    // Pick one or many; Send below goes to all of them.
                     ui.add_space(sp::XS);
                     if ready.is_empty() {
                         ui.label(
@@ -152,6 +149,12 @@ impl App {
 
                     ui.add_space(sp::L);
                     self.send_bar(ui, &ctx, &picked);
+                    // However many files there are, the list scrolls on its own
+                    // below the controls instead of pushing them away.
+                    if !self.drop.files.is_empty() {
+                        ui.add_space(sp::XL);
+                        self.staged(ui);
+                    }
                     ui.add_space(sp::XL);
                     self.inbox(ui, &ctx, &s.waiting_files);
                     ui.add_space(sp::XL);
@@ -215,7 +218,8 @@ impl App {
         }
     }
 
-    /// The files waiting for Send, each with a way to take it back out.
+    /// The files waiting for Send, in a box of its own height that scrolls,
+    /// each with a way to take it back out. Long names are cut short.
     fn staged(&mut self, ui: &mut Ui) {
         // The running send already has its copy of the list.
         let busy = self.busy.contains("send-many");
@@ -225,29 +229,22 @@ impl App {
             let total: u64 = self.drop.files.iter().map(|(_, b)| b).sum();
             widgets::section(ui, &format!("Files to send ({n}, {})", bytes(total)));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.add_enabled(!busy, Btn::new("Clear").small()).clicked() {
+                if ui.add_enabled(!busy, Btn::new("Clear all").small()).clicked() {
                     self.drop.files.clear();
                 }
             });
         });
+        ui.add_space(sp::XS);
         let mut remove = None;
-        for (i, (f, size)) in self.drop.files.iter().enumerate() {
-            if i > 0 {
-                widgets::divider(ui, 0.0);
+        let files = &self.drop.files;
+        file_box(ui, "staged", files.len(), |ui, i, gutter| {
+            let (f, size) = &files[i];
+            let name = f.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+            let path = f.display().to_string();
+            if file_row(ui, &name, &path, *size, gutter, (icon::CLOSE, "Take out"), !busy) {
+                remove = Some(i);
             }
-            ui.horizontal(|ui| {
-                ui.set_min_height(34.0);
-                let name = f.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
-                ui.label(RichText::new(name).monospace())
-                    .on_hover_text(f.display().to_string());
-                ui.label(RichText::new(bytes(*size)).size(ty::SMALL).color(MUTED));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if icon_button(ui, icon::CLOSE, "Take out", !busy) {
-                        remove = Some(i);
-                    }
-                });
-            });
-        }
+        });
         if let Some(i) = remove {
             self.drop.files.remove(i);
         }
@@ -272,19 +269,33 @@ impl App {
             (_, 0) => (format!("Pick who gets the {what}"), false),
             _ => (format!("{what} to {to}"), true),
         };
-        ui.horizontal(|ui| {
-            ui.set_min_height(36.0);
-            if busy {
-                ui.add(egui::Spinner::new());
-            }
-            ui.label(RichText::new(hint).size(ty::BUTTON).color(if ready { TEXT } else { MUTED }));
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let b = Btn::new("Send").glyph(icon::SEND).primary();
-                if ui.add_enabled(ready, b).clicked() {
-                    self.send_staged(ctx, picked);
-                }
+        let fill = if ready { ACCENT.gamma_multiply(0.08) } else { SURFACE };
+        let edge = if ready { ACCENT.gamma_multiply(0.5) } else { BORDER };
+        card_frame(0)
+            .fill(fill)
+            .stroke(Stroke::new(1.0, edge))
+            .inner_margin(egui::Margin::symmetric(sp::L as i8, sp::S as i8))
+            .show(ui, |ui| {
+                // The button goes in first so a long hint can only cut itself short.
+                ui.allocate_ui_with_layout(
+                    vec2(ui.available_width(), 36.0),
+                    Layout::right_to_left(Align::Center),
+                    |ui| {
+                        let b = Btn::new("Send").glyph(icon::SEND).primary();
+                        if ui.add_enabled(ready, b).clicked() {
+                            self.send_staged(ctx, picked);
+                        }
+                        ui.add_space(sp::M);
+                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                            if busy {
+                                ui.add(egui::Spinner::new());
+                            }
+                            let col = if ready { TEXT } else { MUTED };
+                            ui.add(egui::Label::new(RichText::new(hint).size(ty::BUTTON).color(col)).truncate());
+                        });
+                    },
+                );
             });
-        });
     }
 
     fn send_staged(&mut self, ctx: &egui::Context, picked: &[Node]) {
@@ -363,14 +374,20 @@ impl App {
         resp
     }
 
-    /// Files other devices sent here. Quiet when empty.
+    /// Files other devices sent here, below everything else so an arrival
+    /// never moves the controls. One quiet line when there are none.
     fn inbox(&mut self, ui: &mut Ui, ctx: &egui::Context, files: &[ts::WaitingFile]) {
+        if files.is_empty() {
+            ui.label(
+                RichText::new("Nothing has arrived here. Files other devices send land here.")
+                    .size(ty::SMALL)
+                    .color(FAINT),
+            );
+            return;
+        }
         ui.horizontal(|ui| {
             ui.set_min_height(28.0);
-            widgets::section(ui, if files.is_empty() { "Incoming" } else { "Incoming files" });
-            if files.is_empty() {
-                return;
-            }
+            widgets::section(ui, &format!("Arrived here ({})", files.len()));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let busy = self.busy.contains("receive");
                 let b = Btn::new("Save all to Downloads").glyph(icon::DOWNLOAD).small();
@@ -384,31 +401,17 @@ impl App {
                 }
             });
         });
-        if files.is_empty() {
-            ui.label(
-                RichText::new("Nothing waiting. Files sent to this device land here.")
-                    .size(ty::BUTTON)
-                    .color(FAINT),
-            );
-            return;
-        }
         ui.add_space(sp::XS);
-        for (i, f) in files.iter().enumerate() {
-            if i > 0 {
-                widgets::divider(ui, 0.0);
+        let mut discard = None;
+        file_box(ui, "inbox", files.len(), |ui, i, gutter| {
+            let f = &files[i];
+            if file_row(ui, &f.name, &f.name, f.size, gutter, (icon::TRASH, "Discard"), true) {
+                discard = Some(f.name.clone());
             }
-            ui.horizontal(|ui| {
-                ui.set_min_height(36.0);
-                ui.label(RichText::new(&f.name).monospace());
-                ui.label(RichText::new(bytes(f.size)).size(ty::SMALL).color(MUTED));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if icon_button(ui, icon::TRASH, "Discard", true) {
-                        let name = f.name.clone();
-                        self.act(ctx, &format!("del-{name}"), move || {
-                            ts::delete_waiting_file(&name).map(|_| format!("Discarded {name}"))
-                        });
-                    }
-                });
+        });
+        if let Some(name) = discard {
+            self.act(ctx, &format!("del-{name}"), move || {
+                ts::delete_waiting_file(&name).map(|_| format!("Discarded {name}"))
             });
         }
     }
@@ -430,6 +433,63 @@ impl App {
         }
         self.stage(files);
     }
+}
+
+/// How tall one row of the staged file list is.
+const FILE_ROW: f32 = 30.0;
+
+/// A list of files in a card, at most ten and a half rows tall so a cut-off
+/// row shows there is more; past that it scrolls. Rows are drawn lazily.
+/// `row` gets the index and how much room to leave for the scrollbar.
+fn file_box(ui: &mut Ui, salt: &str, n: usize, mut row: impl FnMut(&mut Ui, usize, f32)) {
+    let scrolls = n > 10;
+    let h = FILE_ROW * if scrolls { 10.5 } else { n as f32 };
+    let gutter = if scrolls { sp::M } else { 0.0 };
+    card_frame(0)
+        .inner_margin(egui::Margin::symmetric(sp::M as i8, sp::XS as i8))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            egui::ScrollArea::vertical()
+                .id_salt(salt)
+                .min_scrolled_height(h)
+                .max_height(h)
+                .auto_shrink([false, false])
+                .show_rows(ui, FILE_ROW, n, |ui, rows| {
+                    for i in rows {
+                        row(ui, i, gutter);
+                    }
+                });
+        });
+}
+
+/// One file: the name, cut short when long, its size and an action button on
+/// the right, `gutter` clear of the scrollbar. True when the button was clicked.
+fn file_row(
+    ui: &mut Ui,
+    name: &str,
+    hover: &str,
+    size: u64,
+    gutter: f32,
+    (glyph, tip): (&str, &str),
+    enabled: bool,
+) -> bool {
+    let mut clicked = false;
+    ui.allocate_ui_with_layout(
+        vec2(ui.available_width(), FILE_ROW),
+        Layout::right_to_left(Align::Center),
+        |ui| {
+            ui.add_space(gutter);
+            clicked = icon_button(ui, glyph, tip, enabled);
+            ui.add_space(sp::S);
+            ui.label(RichText::new(bytes(size)).size(ty::SMALL).color(MUTED));
+            ui.add_space(sp::M);
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.add(egui::Label::new(RichText::new(name).monospace()).truncate())
+                    .on_hover_text(hover);
+            });
+        },
+    );
+    clicked
 }
 
 /// A device to send to: stable id, address, shown name.
