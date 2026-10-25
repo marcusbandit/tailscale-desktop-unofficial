@@ -29,8 +29,8 @@ mod g {
     pub const WINDOWS_10: &str = "\u{f17a}";
     pub const WINDOWS_7: &str = "\u{f0a21}";
     // Phone and TV makers, drawn from Simple Icons into the bundled font.
-    // Makers whose only logo is a wordmark (Samsung, Sony, Oppo, Vivo) stay
-    // the robot: a word shrunk to a badge can't be read.
+    // Makers whose only logo is a wordmark (Samsung, Sony, Honor, Oppo, vivo,
+    // Nokia) stay the robot: a word shrunk to a badge can't be read.
     pub const MOTOROLA: &str = "\u{100001}";
     pub const ONEPLUS: &str = "\u{100002}";
     pub const XIAOMI: &str = "\u{100003}";
@@ -281,7 +281,9 @@ mod tests {
 
     #[test]
     fn windows_marks_follow_the_build() {
-        assert_eq!(of(&os("windows", "", "10.0.26100.1"), "a", "a").glyph, g::WINDOWS_11);
+        // The flat four squares, not the tilted Windows 8/10 mark.
+        assert_eq!(of(&os("windows", "", "10.0.26100.1"), "a", "a").glyph, "\u{e8e5}");
+        assert_eq!(of(&os("windows", "", "10.0.19045.1"), "a", "a").glyph, "\u{f17a}");
         assert_eq!(of(&os("windows", "", "10.0.19045.1"), "a", "a").glyph, g::WINDOWS_10);
         assert_eq!(of(&os("windows", "", "6.1.7601"), "a", "a").glyph, g::WINDOWS_7);
         assert_eq!(of(&os("windows", "", ""), "a", "a").glyph, g::WINDOWS_10);
@@ -299,6 +301,13 @@ mod tests {
         assert_eq!(of(&os("android", "", "14"), "oneplus-12", "OnePlus 12").glyph, g::ONEPLUS);
         assert_eq!(of(&os("android", "", "14"), "redmi-note-13", "Redmi Note 13").glyph, g::XIAOMI);
         assert_eq!(of(&os("android", "", "14"), "moto-g84", "moto g84").glyph, g::MOTOROLA);
+        assert_eq!(of(&os("android", "", "14"), "razr-50", "razr 50").glyph, g::MOTOROLA);
+        let huawei = of(&os("android", "", "12"), "huawei-p60", "HUAWEI P60");
+        assert_eq!((huawei.glyph, huawei.label.as_str()), (g::HUAWEI, "Huawei, Android 12"));
+        for (name, maker) in [("Honor 200", "Honor"), ("OPPO Reno12", "Oppo"), ("vivo X100", "vivo"), ("Nokia G42", "Nokia")] {
+            let i = of(&os("android", "", "14"), name, name);
+            assert_eq!((i.glyph, i.label), (g::ANDROID, format!("{maker}, Android 14")));
+        }
         let galaxy = of(&os("android", "", "15"), "sm-s918b", "SM-S918B");
         assert_eq!(galaxy.label, "Samsung Galaxy, Android 15");
         // A renamed phone gives nothing away and stays the robot.

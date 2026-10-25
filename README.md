@@ -79,6 +79,7 @@ at that moment to test that it returns.
 ## Icons
 
 The OS logos in `assets/os-icons.ttf` are a subset of Symbols Nerd Font 3.5.1 from
-[Nerd Fonts](https://github.com/ryanoasis/nerd-fonts), MIT licensed; see
-`assets/os-icons-LICENSE.txt`. The logos are trademarks of their owners and are shown only to
+[Nerd Fonts](https://github.com/ryanoasis/nerd-fonts), MIT licensed, plus six phone and TV maker
+logos converted from [Simple Icons](https://simpleicons.org) (CC0); see
+`assets/os-icons-LICENSE.txt`. `scripts/build-os-icons.py` rebuilds the font. The logos are trademarks of their owners and are shown only to
 say what each device runs.
