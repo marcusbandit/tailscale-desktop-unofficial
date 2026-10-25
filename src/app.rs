@@ -34,6 +34,8 @@ enum Msg {
     Ping(String, Result<Pong, String>),
     PingDone(String),
     Done(String, Result<String, String>),
+    /// Files chosen in the Taildrop file dialog, to stage for sending.
+    Picked(Vec<PathBuf>),
     /// This device's own Hostinfo.
     OsLocal(OsInfo),
     /// The API's view of every device; `None` when no credential is stored.
@@ -231,6 +233,12 @@ impl App {
             Ok("settings") => self.view = View::Settings,
             _ => {}
         }
+        if let Ok(v) = std::env::var("TSDU_STAGE") {
+            self.stage(v.split(':').map(PathBuf::from).collect());
+        }
+        if let Ok(v) = std::env::var("TSDU_TARGETS") {
+            self.drop.pending_names = v.split(',').map(str::to_owned).collect();
+        }
         self
     }
 
@@ -420,8 +428,13 @@ impl App {
                 }
                 Msg::Ping(id, r) => self.pings.entry(id).or_default().results.push(r),
                 Msg::PingDone(id) => self.pings.entry(id).or_default().running = false,
+                Msg::Picked(files) => self.stage(files),
                 Msg::Done(key, r) => {
                     self.busy.remove(&key);
+                    // Sent files leave the list; the devices stay picked for the next ones.
+                    if key == "send-many" && r.is_ok() {
+                        self.drop.files.clear();
+                    }
                     // tailscaled only re-checks forwarding on its next reconfig,
                     // so the fixed warning is closed here.
                     if key == "forwarding" && r.is_ok() {
