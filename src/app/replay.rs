@@ -175,9 +175,9 @@ fn step_row(ui: &mut Ui, i: usize, text: &str, on: bool, progress: Option<f32>) 
             rect,
             8.0,
             if on {
-                CARD_HOVER
+                HOVER
             } else {
-                CARD_HOVER.gamma_multiply(0.5)
+                HOVER.gamma_multiply(0.5)
             },
         );
     }
@@ -188,7 +188,7 @@ fn step_row(ui: &mut Ui, i: usize, text: &str, on: bool, progress: Option<f32>) 
         if on {
             ACCENT.gamma_multiply(0.85)
         } else {
-            CARD_HOVER
+            HOVER
         },
     );
     p.text(

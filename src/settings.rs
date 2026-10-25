@@ -15,6 +15,8 @@ pub struct Settings {
     pub show_ips: bool,
     /// The kernel or build next to the OS in the list; always on hover.
     pub show_kernel: bool,
+    /// Health warnings whose banner was closed; they stay as a dot on the status pill.
+    pub hidden_warnings: Vec<String>,
 }
 
 impl Default for Settings {
@@ -24,6 +26,7 @@ impl Default for Settings {
             privacy_names: false,
             show_ips: true,
             show_kernel: false,
+            hidden_warnings: Vec::new(),
         }
     }
 }
