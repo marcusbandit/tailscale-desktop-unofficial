@@ -2,14 +2,13 @@
 //! shows, OS versions, help and version info. Everything that used to sit in
 //! the sidebar and the header beside the navigation.
 
-use eframe::egui::{self, Align, Layout, RichText, Stroke, Ui, UiBuilder, vec2};
+use eframe::egui::{self, Align, Layout, RichText, Ui, UiBuilder, vec2};
 use serde_json::json;
 
 use super::{App, Onboarding, card_frame, onboard, primary_button, toggle};
+use crate::widgets::{self, Btn};
 use crate::theme::*;
 use crate::ts::{self, Node, Snapshot};
-
-const WIDTH: f32 = 680.0;
 
 impl App {
     pub(super) fn settings_view(&mut self, ui: &mut Ui) {
@@ -22,9 +21,12 @@ impl App {
             area = area.vertical_scroll_offset(y);
         }
         area.show(ui, |ui| {
-            ui.set_max_width(WIDTH.min(ui.available_width()));
-            ui.label(RichText::new("Settings").heading());
-            ui.add_space(14.0);
+            widgets::column(ui, widgets::COLUMN, |ui| self.settings_column(ui));
+        });
+    }
+
+    fn settings_column(&mut self, ui: &mut Ui) {
+        widgets::page_title(ui, "Settings", "", |_| {});
             // Prefs can change while Tailscale is off, ready for when it is back.
             match self.snap.clone() {
                 Some(s) => self.routing(ui, &s),
@@ -40,8 +42,7 @@ impl App {
             self.os_versions(ui);
             self.help(ui);
             self.about(ui);
-            ui.add_space(24.0);
-        });
+            ui.add_space(sp::XL);
     }
 
     fn routing(&mut self, ui: &mut Ui, s: &Snapshot) {
@@ -230,33 +231,33 @@ impl App {
     fn os_versions(&mut self, ui: &mut Ui) {
         let mut remove = false;
         let mut set_up = false;
-        group(ui, "OS versions", |ui| {
+        group(ui, "Device details", |ui| {
             if self.api.connected {
                 let (text, col) = match &self.api.error {
-                    None => ("On for every device", GREEN),
+                    None => ("Connected  ·  read-only token", GREEN),
                     Some(_) => ("Could not refresh", AMBER),
                 };
                 row(
                     ui,
                     RichText::new(text).color(col),
-                    "Read from the Tailscale API with a read-only credential kept in your \
-                     keyring. Removing it doesn't touch your connection to the tailnet.",
+                    "Every device's distro, kernel and OS version, read from the Tailscale API. \
+                     The token lives in your keyring; removing it doesn't touch your connection.",
                     |ui| {
                         remove = ui
-                            .button("Remove credential")
+                            .add(Btn::new("Remove token"))
                             .on_hover_text("Delete the API credential from the keyring")
                             .clicked();
                     },
                 );
                 if let Some(e) = &self.api.error {
-                    ui.label(RichText::new(self.mask.external(e)).size(11.5).color(FAINT));
+                    ui.label(RichText::new(self.mask.external(e)).size(ty::SMALL).color(FAINT));
                 }
             } else {
                 row(
                     ui,
                     "Only this device",
                     "Other devices share their distro, kernel and OS version only through \
-                     the Tailscale API. Setup takes about a minute.",
+                     the Tailscale API, with a read-only token. Setup takes about a minute.",
                     |ui| set_up = primary_button(ui, "Set up").clicked(),
                 );
             }
@@ -276,14 +277,7 @@ impl App {
                 ui,
                 "Welcome tour",
                 "What the app does and the things that are easy to miss.",
-                |ui| tour = ui.button("Open").clicked(),
-            );
-            divider(ui);
-            row(
-                ui,
-                "Search",
-                "tag:server, os:android, user:alice and is:offline narrow the device list.",
-                |_| {},
+                |ui| tour = ui.add(Btn::new("Open")).clicked(),
             );
         });
         if tour {
@@ -310,19 +304,20 @@ impl App {
         }
         group(ui, "About", |ui| {
             egui::Grid::new("about")
+                .min_row_height(18.0)
                 .num_columns(2)
                 .spacing(vec2(16.0, 6.0))
                 .show(ui, |ui| {
                     for (k, v) in rows {
-                        ui.label(RichText::new(k).size(12.5).color(MUTED));
-                        ui.label(RichText::new(v).size(12.5));
+                        ui.label(RichText::new(k).size(ty::SMALL).color(MUTED));
+                        ui.label(RichText::new(v).size(ty::SMALL));
                         ui.end_row();
                     }
                 });
             ui.add_space(6.0);
             ui.label(
                 RichText::new("Made independently, not by Tailscale.")
-                    .size(11.5)
+                    .size(ty::SMALL)
                     .color(FAINT),
             );
         });
@@ -331,13 +326,13 @@ impl App {
 
 /// A titled card of settings.
 fn group(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui)) {
-    ui.label(RichText::new(title).size(12.5).color(MUTED).strong());
-    ui.add_space(6.0);
-    card_frame(16).show(ui, |ui| {
+    widgets::section(ui, title);
+    ui.add_space(sp::XS);
+    card_frame(sp::L as i8).show(ui, |ui| {
         ui.set_width(ui.available_width());
         add(ui)
     });
-    ui.add_space(20.0);
+    ui.add_space(sp::XL);
 }
 
 /// A setting: its name with a line on what it does, and its control on the right.
@@ -356,7 +351,7 @@ fn row(
             ui.set_width(text_w);
             ui.spacing_mut().item_spacing.y = 2.0;
             ui.label(label);
-            ui.add(egui::Label::new(RichText::new(hint).size(12.5).color(MUTED)).wrap());
+            ui.add(egui::Label::new(RichText::new(hint).size(ty::SMALL).color(MUTED)).wrap());
         })
         .response
         .rect;
@@ -374,9 +369,5 @@ fn row(
 }
 
 fn divider(ui: &mut Ui) {
-    ui.add_space(6.0);
-    let r = ui.available_rect_before_wrap();
-    ui.painter()
-        .hline(r.left()..=r.right(), r.top(), Stroke::new(1.0, BORDER));
-    ui.add_space(7.0);
+    widgets::divider(ui, sp::M);
 }

@@ -8,6 +8,7 @@ mod settings;
 mod shot;
 mod theme;
 mod ts;
+mod widgets;
 
 /// Shown wherever the app names itself. It is not made by Tailscale, and says so.
 pub const APP_NAME: &str = "Tailscale Desktop (unofficial)";

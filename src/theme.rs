@@ -6,21 +6,48 @@ use eframe::egui::{
     TextStyle, Visuals,
 };
 
+// Design tokens. Every screen draws from these and nothing else: two surfaces,
+// three text levels, one radius, a 4 px spacing scale, two control sizes.
+
+/// The window, behind the content.
 pub const BG: Color32 = Color32::from_rgb(0x0d, 0x0f, 0x13);
-pub const PANEL: Color32 = Color32::from_rgb(0x12, 0x15, 0x1a);
-pub const CARD: Color32 = Color32::from_rgb(0x18, 0x1c, 0x23);
-pub const CARD_HOVER: Color32 = Color32::from_rgb(0x1f, 0x24, 0x2d);
-pub const CARD_SELECTED: Color32 = Color32::from_rgb(0x1c, 0x26, 0x3a);
+/// Header, sidebar, side panels and grouped settings.
+pub const SURFACE: Color32 = Color32::from_rgb(0x14, 0x17, 0x1d);
+/// Fills for controls and for rows under the pointer or selected.
+pub const HOVER: Color32 = Color32::from_rgb(0x1f, 0x24, 0x2d);
+pub const PRESSED: Color32 = Color32::from_rgb(0x2a, 0x30, 0x3b);
+pub const SELECTED: Color32 = Color32::from_rgb(0x1b, 0x26, 0x3a);
 pub const BORDER: Color32 = Color32::from_rgb(0x25, 0x2a, 0x33);
+/// Links in the access graph.
 pub const EDGE: Color32 = Color32::from_rgb(0x3a, 0x42, 0x50);
 pub const TEXT: Color32 = Color32::from_rgb(0xe7, 0xe9, 0xee);
-pub const MUTED: Color32 = Color32::from_rgb(0x87, 0x90, 0x9e);
-pub const FAINT: Color32 = Color32::from_rgb(0x52, 0x59, 0x66);
+pub const MUTED: Color32 = Color32::from_rgb(0x8b, 0x93, 0xa1);
+pub const FAINT: Color32 = Color32::from_rgb(0x56, 0x5d, 0x6a);
 pub const ACCENT: Color32 = Color32::from_rgb(0x5b, 0x9b, 0xff);
 pub const GREEN: Color32 = Color32::from_rgb(0x3d, 0xd6, 0x8c);
 pub const AMBER: Color32 = Color32::from_rgb(0xf5, 0xa5, 0x24);
 pub const RED: Color32 = Color32::from_rgb(0xf1, 0x60, 0x63);
 pub const PURPLE: Color32 = Color32::from_rgb(0xb3, 0x94, 0xff);
+
+/// The one corner radius, for buttons, chips, rows, cards and popups.
+pub const RADIUS: f32 = 8.0;
+
+/// Spacing scale.
+pub mod sp {
+    pub const XS: f32 = 4.0;
+    pub const S: f32 = 8.0;
+    pub const M: f32 = 12.0;
+    pub const L: f32 = 16.0;
+    pub const XL: f32 = 24.0;
+}
+
+/// Type scale.
+pub mod ty {
+    pub const SMALL: f32 = 12.0;
+    pub const BUTTON: f32 = 13.0;
+    pub const BODY: f32 = 14.0;
+    pub const HEADING: f32 = 20.0;
+}
 
 /// Font Awesome codepoints, present in every Nerd Font.
 pub mod icon {
@@ -53,6 +80,68 @@ pub mod icon {
     pub const CHEVRON_RIGHT: &str = "\u{f054}";
     pub const HELP: &str = "\u{f059}";
     pub const EXTERNAL: &str = "\u{f08e}";
+    pub const UPLOAD: &str = "\u{f093}";
+    pub const ARROW_RIGHT: &str = "\u{f061}";
+    pub const ARROW_LEFT: &str = "\u{f060}";
+    pub const ARROWS_H: &str = "\u{f07e}";
+}
+
+/// How far a glyph's visual weight sits from the middle of its ink box, as a
+/// share of the box, measured from the font. A paper plane or a tray with an
+/// arrow looks off center even when its box is centered, so it is moved back by
+/// half of this.
+fn weight_offset(glyph: &str) -> egui::Vec2 {
+    let (x, y) = match glyph {
+        icon::SEND => (0.094, 0.016),
+        icon::DOWNLOAD => (-0.008, 0.192),
+        icon::UPLOAD => (-0.008, 0.140),
+        icon::GRAPH => (0.080, 0.0),
+        icon::WARN => (0.0, 0.123),
+        icon::INBOX => (0.0, 0.075),
+        icon::USER => (0.0, 0.091),
+        icon::TAG => (-0.038, -0.038),
+        icon::POWER => (0.0, 0.039),
+        icon::ARROW_RIGHT => (0.095, 0.0),
+        icon::ARROW_LEFT => (-0.095, 0.0),
+        icon::COPY => (-0.024, 0.020),
+        _ => (0.0, 0.0),
+    };
+    egui::vec2(x, y)
+}
+
+/// Paints an icon so its ink fills a `size` square, centered on `center` by eye.
+/// Every glyph gets the same box, so a wide eye and a narrow bolt read as the
+/// same size, and lopsided glyphs are nudged toward their visual middle.
+pub fn paint_glyph(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    glyph: &str,
+    size: f32,
+    color: Color32,
+) {
+    let ink = ink_rect(painter, glyph, size);
+    let scale = if ink.is_positive() {
+        size / ink.width().max(ink.height())
+    } else {
+        1.0
+    };
+    let font = size * scale;
+    let nudge = -weight_offset(glyph) * 0.5 * size;
+    paint_icon(painter, center + nudge, glyph, font, color);
+}
+
+fn ink_rect(painter: &egui::Painter, glyph: &str, size: f32) -> egui::Rect {
+    let g = painter.layout_no_wrap(glyph.to_owned(), FontId::proportional(size), TEXT);
+    let mut ink = egui::Rect::NOTHING;
+    for row in &g.rows {
+        for gl in &row.row.glyphs {
+            if !gl.uv_rect.is_nothing() {
+                let min = row.pos + gl.pos.to_vec2() + gl.uv_rect.offset;
+                ink = ink.union(egui::Rect::from_min_size(min, gl.uv_rect.size));
+            }
+        }
+    }
+    ink
 }
 
 
@@ -102,7 +191,6 @@ impl Badge {
     }
 }
 
-pub const RING_OFF: Color32 = Color32::from_rgb(0x3a, 0x41, 0x4d);
 pub const ME_FILL: Color32 = Color32::from_rgb(0x16, 0x2a, 0x4d);
 
 /// A device everywhere in the app: its OS glyph inside a ring that is green while
@@ -115,8 +203,8 @@ pub fn paint_badge(
     b: Badge,
     alpha: f32,
 ) {
-    let ring = if b.online { GREEN } else { RING_OFF };
-    let fill = if b.me { ME_FILL } else { CARD_HOVER };
+    let ring = if b.online { GREEN } else { EDGE };
+    let fill = if b.me { ME_FILL } else { HOVER };
     let width = (r * 0.09).clamp(1.5, 2.0);
     let shape = |rect_r: f32, f: Color32, s: Stroke| {
         if b.tagged {
@@ -225,50 +313,52 @@ pub fn install(ctx: &egui::Context) {
 
     ctx.all_styles_mut(|style| {
         style.text_styles = [
-            (TextStyle::Small, FontId::proportional(11.5)),
-            (TextStyle::Body, FontId::proportional(14.0)),
-            (TextStyle::Button, FontId::proportional(13.5)),
+            (TextStyle::Small, FontId::proportional(ty::SMALL)),
+            (TextStyle::Body, FontId::proportional(ty::BODY)),
+            (TextStyle::Button, FontId::proportional(ty::BUTTON)),
             (
                 TextStyle::Heading,
-                FontId::new(20.0, FontFamily::Name("strong".into())),
+                FontId::new(ty::HEADING, FontFamily::Name("strong".into())),
             ),
             (TextStyle::Monospace, FontId::monospace(13.0)),
         ]
         .into();
-        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-        style.spacing.button_padding = egui::vec2(12.0, 6.0);
-        style.spacing.interact_size.y = 30.0;
-        style.spacing.menu_margin = Margin::same(8);
+        style.spacing.item_spacing = egui::vec2(sp::S, sp::S);
+        style.spacing.button_padding = egui::vec2(sp::M, sp::S);
+        style.spacing.interact_size.y = 32.0;
+        style.spacing.menu_margin = Margin::same(sp::S as i8);
         style.interaction.selectable_labels = false;
 
         let mut v = Visuals::dark();
-        v.panel_fill = PANEL;
-        v.window_fill = CARD;
-        v.extreme_bg_color = BG;
-        v.faint_bg_color = CARD;
+        v.panel_fill = SURFACE;
+        v.window_fill = SURFACE;
+        v.extreme_bg_color = SURFACE;
+        v.faint_bg_color = SURFACE;
         v.override_text_color = Some(TEXT);
         v.hyperlink_color = ACCENT;
         v.selection.bg_fill = ACCENT.gamma_multiply(0.35);
         v.selection.stroke = Stroke::new(1.0, ACCENT);
         v.window_stroke = Stroke::new(1.0, BORDER);
-        v.window_corner_radius = CornerRadius::same(12);
-        v.menu_corner_radius = CornerRadius::same(10);
-        let r = CornerRadius::same(8);
+        let r = CornerRadius::same(RADIUS as u8);
+        v.window_corner_radius = r;
+        v.menu_corner_radius = r;
         v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, BORDER);
         v.widgets.noninteractive.corner_radius = r;
         v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, MUTED);
-        v.widgets.inactive.bg_fill = CARD_HOVER;
-        v.widgets.inactive.weak_bg_fill = CARD_HOVER;
+        v.widgets.inactive.bg_fill = HOVER;
+        v.widgets.inactive.weak_bg_fill = HOVER;
+        // Only text fields and combo boxes still use egui's own frames.
         v.widgets.inactive.bg_stroke = Stroke::new(1.0, BORDER);
         v.widgets.inactive.corner_radius = r;
         v.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT);
-        v.widgets.hovered.bg_fill = Color32::from_rgb(0x2a, 0x30, 0x3b);
-        v.widgets.hovered.weak_bg_fill = Color32::from_rgb(0x2a, 0x30, 0x3b);
-        v.widgets.hovered.bg_stroke = Stroke::new(1.0, Color32::from_rgb(0x3a, 0x42, 0x50));
+        v.widgets.hovered.bg_fill = PRESSED;
+        v.widgets.hovered.weak_bg_fill = PRESSED;
+        v.widgets.hovered.bg_stroke = Stroke::new(1.0, EDGE);
         v.widgets.hovered.corner_radius = r;
         v.widgets.hovered.expansion = 0.0;
-        v.widgets.active.bg_fill = Color32::from_rgb(0x33, 0x3a, 0x47);
-        v.widgets.active.weak_bg_fill = Color32::from_rgb(0x33, 0x3a, 0x47);
+        v.widgets.active.bg_fill = PRESSED;
+        v.widgets.active.weak_bg_fill = PRESSED;
+        v.widgets.active.bg_stroke = Stroke::new(1.0, EDGE);
         v.widgets.active.corner_radius = r;
         v.widgets.active.expansion = 0.0;
         v.widgets.open.corner_radius = r;

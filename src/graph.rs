@@ -1,4 +1,6 @@
-//! Force-directed "who can talk to whom" graph, Obsidian style.
+//! "Who can talk to whom" as rings: this device in the middle, online devices
+//! on a ring around it, offline ones faded on an outer ring. Nodes spring to
+//! their slot, so a dragged one glides back.
 
 use std::collections::HashMap;
 
@@ -64,72 +66,59 @@ impl Camera {
 const NODE_R: f32 = 20.0;
 /// How long the graph may sit fully off screen before the camera brings it back.
 const RETURN_AFTER: f64 = 1.0;
-/// Height kept clear for the legend in the bottom left corner.
-const LEGEND_H: f32 = 142.0;
+/// Room kept clear for the title above and the legend strip below.
+const TITLE_H: f32 = 72.0;
+const LEGEND_H: f32 = 64.0;
 
-/// Peers sit on a ring around this device. Devices of the same kind (owner, or tag
-/// set) are seeded next to each other so their shared links stay short.
-fn ring_radius(peers: usize) -> f32 {
-    (peers as f32 * 34.0).clamp(150.0, 340.0)
+/// The online ring grows with the number of devices on it; offline ones sit
+/// one step further out.
+fn ring_radius(online: usize) -> f32 {
+    (online as f32 * 32.0).clamp(130.0, 240.0)
+}
+const OUTER_STEP: f32 = 105.0;
+
+/// Where each node belongs: this device in the middle, online peers evenly on
+/// the inner ring in `order`, offline peers on the outer ring between them.
+fn slots(center: &[bool], online: &[bool], order: &[usize]) -> Vec<Vec2> {
+    let mut out = vec![Vec2::ZERO; center.len()];
+    let inner: Vec<usize> = order.iter().copied().filter(|&i| !center[i] && online[i]).collect();
+    let outer: Vec<usize> = order.iter().copied().filter(|&i| !center[i] && !online[i]).collect();
+    let r1 = ring_radius(inner.len());
+    let place = |list: &[usize], r: f32, offset: f32, out: &mut Vec<Vec2>| {
+        for (k, &i) in list.iter().enumerate() {
+            let a = (k as f32 + offset) / list.len().max(1) as f32 * std::f32::consts::TAU
+                - std::f32::consts::FRAC_PI_2;
+            out[i] = vec2(a.cos(), a.sin()) * r;
+        }
+    };
+    place(&inner, r1, 0.0, &mut out);
+    place(&outer, r1 + OUTER_STEP, 0.5, &mut out);
+    out
 }
 
 impl GraphState {
-    fn step(
-        &mut self,
-        ids: &[String],
-        center: &[bool],
-        order: impl FnOnce() -> Vec<usize>,
-        dt: f32,
-    ) -> f32 {
-        let n = ids.len();
-        let peers = center.iter().filter(|c| !**c).count();
-        let ring = ring_radius(peers);
-        let seeding = ids.iter().any(|id| !self.pos.contains_key(id));
-        let order = if seeding { order() } else { Vec::new() };
-        for (slot, &i) in order.iter().enumerate() {
-            let id = &ids[i];
-            if !self.pos.contains_key(id) {
-                let p = if center[i] {
-                    Vec2::ZERO
-                } else {
-                    let a = slot as f32 / peers.max(1) as f32 * std::f32::consts::TAU
-                        - std::f32::consts::FRAC_PI_2;
-                    vec2(a.cos(), a.sin()) * ring
-                };
-                self.pos.insert(id.clone(), p);
-            }
-            self.vel.entry(id.clone()).or_default();
-        }
-        let p: Vec<Vec2> = ids.iter().map(|id| self.pos[id]).collect();
-        let mut f = vec![Vec2::ZERO; n];
-        for i in 0..n {
-            for j in (i + 1)..n {
-                let d = p[i] - p[j];
-                let dist2 = d.length_sq().max(100.0);
-                let push = d.normalized() * (90000.0 / dist2);
-                f[i] += push;
-                f[j] -= push;
-            }
-            // Pull toward the center for this device, toward the ring for peers.
-            let r = p[i].length();
-            if center[i] || r < 1.0 {
-                f[i] -= p[i] * 0.08;
-            } else {
-                f[i] += p[i] / r * (ring - r) * 0.06;
-            }
-        }
+    /// Moves every node a step toward its slot; returns how much is still moving.
+    fn step(&mut self, ids: &[String], target: &[Vec2], dt: f32) -> f32 {
         let mut energy = 0.0;
         for (i, id) in ids.iter().enumerate() {
+            let p = *self.pos.entry(id.clone()).or_insert(target[i]);
+            let v = self.vel.entry(id.clone()).or_default();
             if self.dragging.as_deref() == Some(id) {
+                *v = Vec2::ZERO;
                 continue;
             }
-            let v = self.vel.get_mut(id).unwrap();
-            *v = (*v + f[i] * dt * 60.0) * 0.8;
-            if v.length() > 40.0 {
-                *v = v.normalized() * 40.0;
+            // A critically damped spring, stepped finely so a long frame stays stable.
+            const W: f32 = 10.0;
+            let steps = (dt / 0.004).ceil().max(1.0) as usize;
+            let h = dt / steps as f32;
+            let mut p = p;
+            for _ in 0..steps {
+                let a = (target[i] - p) * W * W - *v * 2.0 * W;
+                *v += a * h;
+                p += *v * h;
             }
-            energy += v.length();
-            *self.pos.get_mut(id).unwrap() += *v * dt * 60.0;
+            energy += v.length() + (target[i] - p).length();
+            self.pos.insert(id.clone(), p);
         }
         energy
     }
@@ -161,20 +150,19 @@ pub fn show(
         .map(|(i, s)| (s.as_str(), i))
         .collect();
     let center: Vec<bool> = nodes.iter().map(|n| n.is_self).collect();
-    // Seeding order for new nodes: owner devices first, then tag sets.
-    let order = || {
-        let mut order: Vec<usize> = (0..nodes.len()).collect();
-        order.sort_by_key(|&i| {
-            let n = nodes[i];
-            let kind = if n.tags.is_empty() {
-                format!("0{}", n.user_login)
-            } else {
-                format!("1{}", n.tags.join(","))
-            };
-            (!n.is_self, kind, mask.order(n))
-        });
-        order
-    };
+    let online: Vec<bool> = nodes.iter().map(|n| n.online || n.is_self).collect();
+    // Around each ring, devices of the same kind (owner, or tag set) sit together.
+    let mut order: Vec<usize> = (0..nodes.len()).collect();
+    order.sort_by_key(|&i| {
+        let n = nodes[i];
+        let kind = if n.tags.is_empty() {
+            format!("0{}", n.user_login)
+        } else {
+            format!("1{}", n.tags.join(","))
+        };
+        (!n.is_self, kind, mask.order(n))
+    });
+    let target = slots(&center, &online, &order);
 
     // One visual edge per pair, with its direction.
     struct Edge {
@@ -224,7 +212,7 @@ pub fn show(
     painter.rect_filled(rect, 0.0, BG);
     let dt = ui.input(|i| i.stable_dt).min(0.05);
     let now = ui.input(|i| i.time);
-    let energy = st.step(&ids, &center, order, dt);
+    let energy = st.step(&ids, &target, dt);
     let node_r = |zoom: f32| NODE_R * zoom.clamp(0.6, 1.6);
 
     // Camera first, so hit-testing below runs against what gets drawn. Free while
@@ -266,12 +254,17 @@ pub fn show(
     if !st.manual && !ids.is_empty() && st.dragging.is_none() {
         // Fit into the canvas above the legend strip, with room for the labels that
         // hang under each node and spread past it sideways.
-        let avail = vec2(rect.width() - 60.0, rect.height() - LEGEND_H - 40.0);
-        let span = bb.size() + vec2(150.0, 90.0);
-        let fit = (avail.x / span.x).min(avail.y / span.y).clamp(0.4, 1.4);
+        let avail = vec2(rect.width() - 60.0, rect.height() - TITLE_H - LEGEND_H - 24.0);
+        // The rings are fitted, not where nodes happen to be mid-glide.
+        let mut tb = Rect::NOTHING;
+        for t in &target {
+            tb.extend_with(t.to_pos2());
+        }
+        let span = tb.size() + vec2(150.0, 90.0);
+        let fit = (avail.x / span.x).min(avail.y / span.y).clamp(0.4, 1.3);
         // Labels make the drawn graph bottom heavy, so aim a little below its middle.
-        let look = bb.center().to_vec2() + vec2(0.0, 20.0);
-        let pan = -look * fit + vec2(0.0, -LEGEND_H / 2.0 + 10.0);
+        let look = tb.center().to_vec2() + vec2(0.0, 14.0);
+        let pan = -look * fit + vec2(0.0, (TITLE_H - LEGEND_H) / 2.0);
         camera_moving = st.cam.spring_to(pan, fit, dt);
     }
 
@@ -352,14 +345,23 @@ pub fn show(
         }
     }
     let screen: Vec<Pos2> = ids.iter().map(|id| origin + st.pos[id] * zoom).collect();
+    let me = center.iter().position(|c| *c);
+
+    // A faint guide for the online ring, so the layout reads as a ring and not
+    // as scattered dots.
+    let inner_n = (0..ids.len()).filter(|&i| !center[i] && online[i]).count();
+    if inner_n > 0 {
+        let r1 = ring_radius(inner_n);
+        painter.circle_stroke(origin, r1 * zoom, Stroke::new(1.0, BORDER.gamma_multiply(0.8)));
+    }
 
     let focus = st.hovered.clone().or(selected.clone());
     let focus_i = focus.as_ref().and_then(|f| idx.get(f.as_str()).copied());
     let t = ui.input(|i| i.time) as f32;
 
-    // Edges. At rest every link is the same quiet line and a one-way link only
-    // carries a small arrowhead; direction and blocking get loud for the device
-    // under focus.
+    // Edges. At rest only this device's own links show, as quiet spokes that
+    // never cross; a one-way link carries a small arrowhead. Focusing a device
+    // brings out all of its links, with direction and blocking made loud.
     let mut animating = false;
     for e in &edges {
         let (pa, pb) = (screen[e.a], screen[e.b]);
@@ -371,14 +373,21 @@ pub fn show(
             continue;
         }
         let lit = focus_i.is_some_and(|f| f == e.a || f == e.b);
+        let spoke = me.is_some_and(|m| m == e.a || m == e.b);
+        if !lit && !spoke {
+            continue;
+        }
         let faded = focus_i.is_some() && !lit;
         let col = match (lit, e.kind) {
             (true, Kind::OneWay) => AMBER,
-            (true, Kind::Both) => Color32::from_rgb(0x8d, 0x99, 0xab),
+            (true, Kind::Both) => MUTED,
             _ => EDGE,
         };
-        let mut alpha = if faded { 0.1 } else { 1.0 };
+        let mut alpha = if faded { 0.15 } else { 1.0 };
         if e.weak && !lit {
+            alpha *= 0.6;
+        }
+        if !lit && (!online[e.a] || !online[e.b]) {
             alpha *= 0.5;
         }
         let col = col.gamma_multiply(alpha);
@@ -437,10 +446,11 @@ pub fn show(
                     .iter()
                     .any(|e| (e.a == f && e.b == i) || (e.b == f && e.a == i))
         });
-        let a = if dim { 0.25 } else { 1.0 };
-        let tagged = !n.tags.is_empty();
         let badge = Badge::of(n);
         let online = badge.online;
+        let base = if online { 1.0 } else { 0.55 };
+        let a = if dim { 0.25 } else { base };
+        let tagged = !n.tags.is_empty();
         if selected.as_deref() == Some(&n.stable_id) || st.hovered.as_deref() == Some(&n.stable_id)
         {
             let halo = if online { GREEN } else { MUTED };
@@ -455,7 +465,8 @@ pub fn show(
         } else {
             mask.name(n)
         };
-        let g = painter.layout_no_wrap(label, FontId::proportional(13.0), TEXT.gamma_multiply(a));
+        let col = if online { TEXT } else { MUTED };
+        let g = painter.layout_no_wrap(label, FontId::proportional(13.0), col.gamma_multiply(a));
         let lr = Rect::from_center_size(
             p + vec2(0.0, r + 8.0 + g.size().y / 2.0),
             g.size() + vec2(12.0, 4.0),
@@ -467,12 +478,13 @@ pub fn show(
                 p + vec2(0.0, r + 28.0),
                 Align2::CENTER_TOP,
                 n.tags.join(" "),
-                FontId::proportional(11.0),
+                FontId::proportional(ty::SMALL - 1.0),
                 PURPLE.gamma_multiply(a),
             );
         }
     }
 
+    title(&painter, rect);
     legend(&painter, rect);
 
     // Hover card for the pair under focus.
@@ -507,8 +519,8 @@ pub fn show(
             (rect.right() - r.right()).min(0.0),
             (rect.bottom() - r.bottom()).min(0.0),
         ));
-        painter.rect_filled(r, 8.0, CARD);
-        painter.rect_stroke(r, 8.0, Stroke::new(1.0, BORDER), egui::StrokeKind::Inside);
+        painter.rect_filled(r, RADIUS, SURFACE);
+        painter.rect_stroke(r, RADIUS, Stroke::new(1.0, BORDER), egui::StrokeKind::Inside);
         painter.galley(r.min + vec2(10.0, 8.0), galley, TEXT);
     }
 
@@ -529,96 +541,118 @@ fn arrow(painter: &egui::Painter, tip: Pos2, dir: Vec2, col: Color32, size: f32)
     ));
 }
 
+/// The page title, drawn over the canvas like every other screen's.
+fn title(painter: &egui::Painter, rect: Rect) {
+    let x = rect.left() + sp::XL;
+    let y = rect.top() + sp::L + 4.0 + 16.0;
+    let g = painter.layout_no_wrap(
+        "Access graph".to_owned(),
+        FontId::new(ty::HEADING, egui::FontFamily::Name("strong".into())),
+        TEXT,
+    );
+    let w = g.size().x;
+    painter.galley(pos2(x, y - g.size().y / 2.0), g, TEXT);
+    painter.text(
+        pos2(x + w + sp::S + sp::XS, y + 1.0),
+        Align2::LEFT_CENTER,
+        "Who can open connections to whom",
+        FontId::proportional(ty::BODY),
+        MUTED,
+    );
+}
+
+/// One strip along the bottom: a mark and a word for each kind of link and node.
 fn legend(painter: &egui::Painter, rect: Rect) {
-    let x = rect.left() + 18.0;
-    let mut y = rect.bottom() - 120.0;
-    let box_r = Rect::from_min_size(pos2(x - 10.0, y - 12.0), vec2(320.0, 122.0));
-    painter.rect_filled(box_r, 10.0, PANEL.gamma_multiply(0.92));
-    painter.rect_stroke(
-        box_r,
-        10.0,
-        Stroke::new(1.0, BORDER),
-        egui::StrokeKind::Inside,
-    );
-    let row = |y: f32, draw: &dyn Fn(Pos2, Pos2), label: &str| {
-        let a = pos2(x, y);
-        let b = pos2(x + 38.0, y);
-        draw(a, b);
-        painter.text(
-            pos2(x + 50.0, y),
-            Align2::LEFT_CENTER,
-            label,
-            FontId::proportional(12.0),
-            MUTED,
-        );
-    };
-    row(
-        y,
-        &|a, b| {
-            painter.line_segment([a, b], Stroke::new(1.4, EDGE));
-        },
-        "both directions",
-    );
-    y += 22.0;
-    row(
-        y,
-        &|a, b| {
-            painter.line_segment([a, b], Stroke::new(1.4, EDGE));
-            arrow(
-                painter,
-                a + (b - a) * 0.6,
-                vec2(1.0, 0.0),
-                AMBER.gamma_multiply(0.75),
-                8.0,
-            );
-        },
-        "one way, toward the device that can be reached",
-    );
-    y += 22.0;
-    row(
-        y,
-        &|a, _| {
-            let p = a + vec2(19.0, 0.0);
-            painter.line_segment(
-                [p - vec2(0.0, 6.0), p + vec2(0.0, 6.0)],
-                Stroke::new(2.0, RED),
-            );
-        },
-        "blocked side, shown for the focused device",
-    );
-    y += 22.0;
-    row(
-        y,
-        &|a, b| {
-            painter.extend(Shape::dashed_line(
-                &[a, b],
-                Stroke::new(1.4, EDGE),
-                6.0,
-                4.0,
-            ));
-        },
-        "inferred from policy pattern",
-    );
-    y += 22.0;
-    let mini = |c: Pos2, b: Badge| paint_badge(painter, c, 7.0, "", b, 1.0);
+    let font = FontId::proportional(ty::SMALL);
+    let mini = |c: Pos2, b: Badge| paint_badge(painter, c, 6.0, "", b, 1.0);
     let plain = Badge {
         online: true,
         me: false,
         tagged: false,
     };
-    mini(pos2(x + 8.0, y), plain);
-    mini(
-        pos2(x + 30.0, y),
-        Badge {
-            online: false,
-            ..plain
-        },
+    type Mark<'a> = Box<dyn Fn(Pos2) + 'a>;
+    let items: Vec<(f32, Mark, &str)> = vec![
+        (
+            22.0,
+            Box::new(|c: Pos2| {
+                painter.line_segment([c - vec2(11.0, 0.0), c + vec2(11.0, 0.0)], Stroke::new(1.4, MUTED));
+            }),
+            "Both ways",
+        ),
+        (
+            22.0,
+            Box::new(|c: Pos2| {
+                painter.line_segment([c - vec2(11.0, 0.0), c + vec2(11.0, 0.0)], Stroke::new(1.4, EDGE));
+                arrow(painter, c + vec2(6.0, 0.0), vec2(1.0, 0.0), AMBER, 8.0);
+            }),
+            "One way",
+        ),
+        (
+            10.0,
+            Box::new(|c: Pos2| {
+                painter.line_segment([c - vec2(0.0, 6.0), c + vec2(0.0, 6.0)], Stroke::new(2.0, RED));
+            }),
+            "Blocked",
+        ),
+        (
+            22.0,
+            Box::new(|c: Pos2| {
+                painter.extend(Shape::dashed_line(
+                    &[c - vec2(11.0, 0.0), c + vec2(11.0, 0.0)],
+                    Stroke::new(1.4, MUTED),
+                    5.0,
+                    3.0,
+                ));
+            }),
+            "Inferred",
+        ),
+        (14.0, Box::new(move |c: Pos2| mini(c, plain)), "Online"),
+        (
+            14.0,
+            Box::new(move |c: Pos2| {
+                mini(
+                    c,
+                    Badge {
+                        online: false,
+                        ..plain
+                    },
+                )
+            }),
+            "Offline",
+        ),
+        (
+            14.0,
+            Box::new(move |c: Pos2| {
+                mini(
+                    c,
+                    Badge {
+                        tagged: true,
+                        ..plain
+                    },
+                )
+            }),
+            "Tagged",
+        ),
+    ];
+    let widths: Vec<f32> = items
+        .iter()
+        .map(|(mw, _, label)| {
+            mw + 6.0 + painter.layout_no_wrap(label.to_string(), font.clone(), MUTED).size().x
+        })
+        .collect();
+    let gap = sp::L + 4.0;
+    let total: f32 = widths.iter().sum::<f32>() + gap * (items.len() - 1) as f32 + sp::L * 2.0;
+    let strip = Rect::from_min_size(
+        pos2(rect.left() + sp::XL, rect.bottom() - sp::L - 32.0),
+        vec2(total, 32.0),
     );
-    painter.text(
-        pos2(x + 50.0, y),
-        Align2::LEFT_CENTER,
-        "online, offline; tagged devices are square",
-        FontId::proportional(12.0),
-        MUTED,
-    );
+    painter.rect_filled(strip, RADIUS, SURFACE.gamma_multiply(0.94));
+    painter.rect_stroke(strip, RADIUS, Stroke::new(1.0, BORDER), egui::StrokeKind::Inside);
+    let mut x = strip.left() + sp::L;
+    let y = strip.center().y;
+    for ((mw, mark, label), w) in items.iter().zip(widths) {
+        mark(pos2(x + mw / 2.0, y));
+        crate::widgets::paint_text(painter, pos2(x + mw + 6.0, y), label, ty::SMALL, MUTED);
+        x += w + gap;
+    }
 }
