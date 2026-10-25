@@ -76,7 +76,7 @@ impl App {
                     ui.vertical(|ui| {
                         ui.set_width(WIDTH.min(ui.available_width() - 24.0));
                         progress(ui, step);
-                        ui.add_space(28.0);
+                        ui.add_space(10.0);
                         match step {
                             WELCOME => self.page_welcome(ui),
                             OS_STEP => self.page_os(ui),
@@ -87,6 +87,10 @@ impl App {
                 });
                 let h = page.response.rect.height();
                 ui.ctx().data_mut(|d| d.insert_temp(id, h));
+                // A page of a new height is placed right on the next frame.
+                if (h - last).abs() > 1.0 {
+                    ui.ctx().request_repaint();
+                }
                 ui.add_space(40.0);
             });
     }
@@ -166,14 +170,14 @@ impl App {
                     );
                 }
                 let hit = egui::Rect::from_center_size(
-                    egui::pos2(c.x, c.y + 24.0),
-                    vec2(slot - 4.0, 80.0),
+                    egui::pos2(c.x, c.y + 30.0),
+                    vec2(slot - 4.0, 104.0),
                 );
                 ui.interact(hit, ui.id().with(("welcome-node", i)), egui::Sense::hover())
                     .on_hover_text(&n.name);
             }
             let online = s.all().filter(|n| n.online || n.is_self).count();
-            let tagged = s.all().any(|n| !n.tags.is_empty());
+            let tagged = nodes.iter().any(|n| !n.tags.is_empty());
             note(
                 ui,
                 &format!(
@@ -256,7 +260,7 @@ impl App {
             ),
             (
                 icon::EYE,
-                "It can only read. It can't change anything on your tailnet.",
+                "It can read your devices and settings, and it can't change anything.",
             ),
             (icon::KEY, "It is stored in your keyring."),
             (
@@ -491,13 +495,19 @@ impl App {
 
 /// A plain text button for the way out of a page, so the primary action leads.
 fn quiet_button(ui: &mut Ui, text: &str) -> egui::Response {
-    ui.add(egui::Button::new(RichText::new(text).color(MUTED)).frame(false))
+    ui.scope(|ui| {
+        // Muted at rest, the normal text color on hover, so it still reads as a button.
+        ui.visuals_mut().widgets.inactive.fg_stroke.color = MUTED;
+        ui.add(egui::Button::new(text).frame(false))
+    })
+    .inner
 }
 
 /// Where you are in the walkthrough: one bar per page, filled up to this one,
 /// with the count under it.
 fn progress(ui: &mut Ui, step: usize) {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 4.0), egui::Sense::hover());
+    let (all, _) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), egui::Sense::hover());
+    let rect = egui::Rect::from_min_size(all.min, vec2(all.width(), 4.0));
     ui.painter().text(
         egui::pos2(rect.right(), rect.bottom() + 5.0),
         egui::Align2::RIGHT_TOP,

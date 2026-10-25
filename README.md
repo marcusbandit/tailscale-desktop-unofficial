@@ -41,8 +41,8 @@ If it is not, the on/off switch falls back to asking for root through polkit or 
 
 tailscaled knows this device's distro and kernel, but peers only report their OS family. For
 the rest the app asks the Tailscale API. The first-run walkthrough sets this up, and Set up OS
-versions in the sidebar opens the same steps: create an OAuth client with Read on Devices Core
-and Device posture, and paste its secret. It is kept in the
+versions in the sidebar opens the same steps: create an OAuth trust credential with
+the All - Read scope, and paste its secret. It is kept in the
 desktop keyring through `secret-tool` and can't change anything on the tailnet. The API gives
 the distro, the kernel on Linux, and the OS version on Android, Windows, macOS and iOS. Results
 are cached in `~/.cache/tailscale-desktop-unofficial/os.json` and refresh every 15 minutes.

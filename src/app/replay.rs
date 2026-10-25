@@ -272,12 +272,14 @@ fn window(ui: &Ui, rect: Rect, idx: usize, t: f32) {
             // The menu stays open through the press on All - Read, then closes.
             let closes = LEAD + CLICK + GLIDE + PRESS + 0.15;
             let menu = done == 1 || (done == 2 && t < closes);
+            // The highlight follows the pointer onto All - Read as it gets there.
+            let lit = if t > LEAD + CLICK + GLIDE * 0.6 { 2 } else { 0 };
             scopes_page(
                 &m,
                 0.0,
                 if menu { 1 } else { done },
                 None,
-                menu.then_some(done),
+                menu.then_some(lit),
             )
         }
         3 => scopes_page(&m, -SCROLL * ease(t / LEAD), 2, Some(done), None),
@@ -545,7 +547,7 @@ fn stepper(m: &Mini, x: f32, y: f32, at: usize) {
 /// menu opened, then All - Read picked, which ticks Read on every scope. `dy`
 /// scrolls the page. `generate` makes Generate credential the target, with the
 /// clicks landed on it. `menu` opens the Custom scopes menu, with the clicks
-/// landed so far; the second one lights All - Read.
+/// item to highlight.
 fn scopes_page(
     m: &Mini,
     dy: f32,
@@ -607,15 +609,15 @@ fn scopes_page(
         m.text(x + 10.0, ry + 13.0, line, 7.5, DIM);
         // All - Read ticks Read everywhere and locks it, as the console does.
         m.checkbox(read_x, ry + 7.0, all_read);
-        m.text(read_x + 14.0, ry + 6.0, "Read", 8.5, DIM);
-        m.checkbox(read_x + 50.0, ry + 7.0, false);
         m.text(
-            read_x + 64.0,
+            read_x + 14.0,
             ry + 6.0,
-            "Write",
+            "Read",
             8.5,
             if all_read { DIM } else { INK },
         );
+        m.checkbox(read_x + 50.0, ry + 7.0, false);
+        m.text(read_x + 64.0, ry + 6.0, "Write", 8.5, INK);
     }
     row_y += box_h + 10.0;
     for label in ["Devices", "Keys", "Logging", "Settings"] {
@@ -636,7 +638,7 @@ fn scopes_page(
 
     // The menu, open between the two clicks, over the rows below it.
     let open = menu.is_some();
-    let lit = if menu == Some(2) { 2 } else { 0 };
+    let lit = menu.unwrap_or(0);
     let menu = m.rect(dd.right() - m.o.x - 140.0, y(84.0), 140.0, 120.0);
     if open {
         m.p.rect_filled(menu, 6.0, Color32::from_rgb(36, 35, 35));
