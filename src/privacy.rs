@@ -74,6 +74,10 @@ impl Mask {
         swaps
     }
 
+    pub fn hides_names(&self) -> bool {
+        self.names
+    }
+
     /// Sorts the way the names read: by number while names are hidden, so the
     /// order can't hint at the real names.
     pub fn order(&self, n: &Node) -> String {

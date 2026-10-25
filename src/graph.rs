@@ -148,6 +148,7 @@ pub fn show(
     m: &Matrix,
     selected: &mut Option<String>,
     mask: &crate::privacy::Mask,
+    icons: &HashMap<String, crate::osicon::Icon>,
 ) {
     if st.cam.zoom == 0.0 {
         st.cam.zoom = 1.0;
@@ -445,7 +446,10 @@ pub fn show(
             let halo = if online { GREEN } else { MUTED };
             painter.circle_filled(p, r + 11.0, halo.gamma_multiply(0.14 * a));
         }
-        paint_badge(&painter, p, r, os_icon(&n.os), badge, a);
+        let glyph = icons
+            .get(&n.stable_id)
+            .map_or(crate::osicon::UNKNOWN, |i| i.glyph);
+        paint_badge(&painter, p, r, glyph, badge, a);
         let label = if n.is_self {
             format!("{} (you)", mask.name(n))
         } else {
@@ -474,7 +478,12 @@ pub fn show(
     // Hover card for the pair under focus.
     if let (Some(h), Some(p)) = (hit, pointer) {
         let n = nodes[h];
+        // What the device is first, then who it can reach.
         let mut lines = vec![];
+        if let Some(i) = icons.get(&n.stable_id) {
+            lines.push(i.label.clone());
+            lines.push(String::new());
+        }
         for (j, o) in nodes.iter().enumerate() {
             if j == h {
                 continue;

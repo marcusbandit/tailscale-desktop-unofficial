@@ -116,6 +116,8 @@ pub struct App {
     dismissed: HashSet<String>,
     /// Test hook: open the status menu on the first frame.
     open_menu: bool,
+    /// Each device's badge icon, worked out once per snapshot or OS update.
+    icons: HashMap<String, crate::osicon::Icon>,
 }
 
 #[derive(Default)]
@@ -185,6 +187,7 @@ impl App {
             settings,
             dismissed: HashSet::new(),
             open_menu: std::env::var("TSDU_MENU").is_ok(),
+            icons: HashMap::new(),
             tx,
             rx,
             wake,
@@ -229,6 +232,18 @@ impl App {
     fn remask(&mut self) {
         let s = &self.settings;
         self.mask = Rc::new(Mask::new(s.privacy, s.privacy_names, self.snap.as_ref()));
+        self.reicon();
+    }
+
+    /// Works out every badge icon again; the names it reads change with the
+    /// snapshot, the OS details and privacy mode.
+    fn reicon(&mut self) {
+        let icons = self.snap.as_ref().map_or_else(HashMap::new, |s| {
+            s.all()
+                .map(|n| (n.stable_id.clone(), self.make_icon(n)))
+                .collect()
+        });
+        self.icons = icons;
     }
 
     /// Changes a setting, saves it and redraws with it.
@@ -446,6 +461,25 @@ impl App {
         let me = self.snap.as_ref().map(|s| s.me.stable_id.clone());
         let local = me.as_deref().zip(self.os_local.as_ref());
         self.os = osinfo::combine(&self.os_api, local);
+        self.reicon();
+    }
+
+    /// The badge glyph for a device and what hovering it says.
+    fn icon_of(&self, n: &Node) -> crate::osicon::Icon {
+        self.icons
+            .get(&n.stable_id)
+            .cloned()
+            .unwrap_or_else(|| self.make_icon(n))
+    }
+
+    /// While names are hidden, the kind of device isn't read from them either.
+    fn make_icon(&self, n: &Node) -> crate::osicon::Icon {
+        let (name, host) = if self.mask.hides_names() {
+            ("", "")
+        } else {
+            (n.name.as_str(), n.hostname.as_str())
+        };
+        crate::osicon::of(&self.os_of(n), name, host)
     }
 
     /// What is known about a device's system, at least the OS family.
@@ -1042,7 +1076,7 @@ impl eframe::App for App {
                         let (snap, m) =
                             (self.snap.as_ref().unwrap(), self.matrix.as_ref().unwrap());
                         let mask = self.mask.clone();
-                        graph::show(ui, &mut self.graph, snap, m, &mut self.selected, &mask);
+                        graph::show(ui, &mut self.graph, snap, m, &mut self.selected, &mask, &self.icons);
                     }
                     View::Taildrop => self.taildrop(ui),
                     View::Settings => {}
@@ -1430,13 +1464,15 @@ impl App {
     /// place; a bare word looks everywhere.
     fn matches(&self, n: &Node, query: &str) -> bool {
         let os = self.os_of(n);
+        // The hover text, so os:pixel, os:ipad and os:raspberry find devices too.
+        let kind = self.icon_of(n).label;
         let has = |hay: &str, v: &str| hay.to_lowercase().contains(v);
         query.split_whitespace().all(|word| {
             let w = word.to_lowercase();
             if let Some(v) = w.strip_prefix("tag:") {
                 n.tags.iter().any(|t| has(t.trim_start_matches("tag:"), v))
             } else if let Some(v) = w.strip_prefix("os:") {
-                has(&os.title(), v) || has(&n.os, v)
+                has(&os.title(), v) || has(&n.os, v) || has(&kind, v)
             } else if let Some(v) = w.strip_prefix("user:") {
                 has(&n.user_login, v) || has(&n.user_display, v)
             } else if let Some(v) = w.strip_prefix("is:") {
@@ -1454,7 +1490,7 @@ impl App {
                     || n.ips.iter().any(|i| i.contains(&w))
                     || n.tags.iter().any(|t| has(t, &w))
                     || has(&n.user_login, &w)
-                    || has(&os.title(), &w)
+                    || has(&kind, &w)
                     || has(&n.os, &w)
             }
         })
@@ -1484,14 +1520,16 @@ impl App {
 
         let inner = rect.shrink2(vec2(14.0, 6.0));
         let dim = !n.online && !n.is_self;
-        paint_badge(
-            ui.painter(),
-            egui::pos2(inner.left() + 18.0, inner.center().y),
-            17.0,
-            os_icon(&n.os),
-            Badge::of(n),
-            1.0,
-        );
+        let os_icon = self.icon_of(n);
+        let badge_c = egui::pos2(inner.left() + 18.0, inner.center().y);
+        paint_badge(ui.painter(), badge_c, 17.0, os_icon.glyph, Badge::of(n), 1.0);
+        // Hovering the badge says what the device is.
+        ui.interact(
+            egui::Rect::from_center_size(badge_c, vec2(36.0, 36.0)),
+            ui.id().with(("badge", &n.stable_id)),
+            Sense::hover(),
+        )
+        .on_hover_text(&os_icon.label);
 
         // Fixed columns so every row lines up; the IP gives way first when the
         // list gets narrow.
@@ -1729,7 +1767,9 @@ impl App {
         let mask = self.mask.clone();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(os_icon(&n.os)).size(22.0).color(if n.online { TEXT } else { MUTED }));
+                let os_icon = self.icon_of(&n);
+                ui.label(RichText::new(os_icon.glyph).size(22.0).color(if n.online { TEXT } else { MUTED }))
+                    .on_hover_text(&os_icon.label);
                 ui.add_space(4.0);
                 ui.label(RichText::new(mask.name(&n)).heading());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1980,7 +2020,8 @@ impl App {
             for p in peers {
                 card(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(os_icon(&p.os)).size(16.0));
+                        let os_icon = self.icon_of(p);
+                        ui.label(RichText::new(os_icon.glyph).size(16.0)).on_hover_text(&os_icon.label);
                         ui.label(RichText::new(self.mask.name(p)).strong());
                         ui.label(RichText::new(p.taildrop_reason()).size(12.0).color(if p.taildrop_ok() { GREEN } else { MUTED }));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {

@@ -15,6 +15,9 @@ tour in Settings, or in the menu behind the status pill, opens it again.
 
 What it shows and does:
 
+- every device's own OS logo: the distro (Arch, Ubuntu, Debian, Fedora, openSUSE, NixOS, Mint,
+  CachyOS and about 45 more), the mark of its Windows 11, 10 or 7, Apple's mark, and for phones,
+  tablets and TVs the kind of device its name suggests. Hover a badge to read what it is
 - every device on the tailnet, online or when it was last seen, owner or tags, OS, and a note only
   when something is off: a relayed path, or access blocked one way or both
 - search by name or IP, or narrow it with `tag:`, `os:`, `user:` and `is:offline`
@@ -72,3 +75,10 @@ quits. `TSDU_VIEW=graph|taildrop|settings` picks the view, `TSDU_MENU=1` opens t
 `TSDU_SHOW_KERNEL=1` set the list columns, `TSDU_SCROLL=<px>` holds Settings scrolled down, `TSDU_SELECT=<device>` opens a device, and
 `TSDU_PING=1` pings it first. `TSDU_ONBOARD=0..3` opens the first-run walkthrough at that page. `TSDU_PAN_AT=<seconds>` throws the graph camera off screen
 at that moment to test that it returns.
+
+## Icons
+
+The OS logos in `assets/os-icons.ttf` are a subset of Symbols Nerd Font 3.5.1 from
+[Nerd Fonts](https://github.com/ryanoasis/nerd-fonts), MIT licensed; see
+`assets/os-icons-LICENSE.txt`. The logos are trademarks of their owners and are shown only to
+say what each device runs.

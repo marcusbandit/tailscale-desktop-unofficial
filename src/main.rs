@@ -1,6 +1,7 @@
 mod access;
 mod app;
 mod graph;
+mod osicon;
 mod osinfo;
 mod privacy;
 mod settings;

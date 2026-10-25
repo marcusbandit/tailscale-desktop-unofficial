@@ -138,7 +138,8 @@ impl App {
             let x0 = rect.center().x - slot * nodes.len() as f32 / 2.0 + slot / 2.0;
             for (i, n) in nodes.iter().enumerate() {
                 let c = egui::pos2(x0 + slot * i as f32, rect.top() + 26.0);
-                paint_badge(ui.painter(), c, 19.0, os_icon(&n.os), labelled(n), 1.0);
+                let glyph = self.icon_of(n).glyph;
+                paint_badge(ui.painter(), c, 19.0, glyph, labelled(n), 1.0);
                 // Two lines of name before it shortens, and the full name on hover.
                 let color = if n.online || n.is_self { TEXT } else { MUTED };
                 let mut job = egui::text::LayoutJob::single_section(
@@ -170,7 +171,7 @@ impl App {
                     vec2(slot - 4.0, 104.0),
                 );
                 ui.interact(hit, ui.id().with(("welcome-node", i)), egui::Sense::hover())
-                    .on_hover_text(self.mask.name(n));
+                    .on_hover_text(format!("{}\n{}", self.mask.name(n), self.icon_of(n).label));
             }
             let online = s.all().filter(|n| n.online || n.is_self).count();
             let tagged = nodes.iter().any(|n| !n.tags.is_empty());
@@ -585,14 +586,8 @@ fn preview_row(
 ) {
     ui.horizontal(|ui| {
         let (r, _) = ui.allocate_exact_size(vec2(34.0, 34.0), egui::Sense::hover());
-        paint_badge(
-            ui.painter(),
-            r.center(),
-            15.0,
-            os_icon(&n.os),
-            labelled(n),
-            1.0,
-        );
+        let glyph = crate::osicon::of(os, &n.name, &n.hostname).glyph;
+        paint_badge(ui.painter(), r.center(), 15.0, glyph, labelled(n), 1.0);
         ui.add_space(8.0);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
