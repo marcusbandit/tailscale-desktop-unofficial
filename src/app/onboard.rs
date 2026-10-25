@@ -66,9 +66,12 @@ impl App {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 let side = ((ui.available_width() - WIDTH) / 2.0).max(24.0);
-                let top = (ui.available_height() * 0.14).clamp(24.0, 140.0);
+                // Center the page in the window, from its height last frame.
+                let id = ui.id().with("onboard-height");
+                let last: f32 = ui.ctx().data(|d| d.get_temp(id)).unwrap_or(0.0);
+                let top = ((ui.available_height() - last) / 2.0).clamp(24.0, 200.0);
                 ui.add_space(top);
-                ui.horizontal(|ui| {
+                let page = ui.horizontal(|ui| {
                     ui.add_space(side);
                     ui.vertical(|ui| {
                         ui.set_width(WIDTH.min(ui.available_width() - 24.0));
@@ -82,6 +85,8 @@ impl App {
                         }
                     });
                 });
+                let h = page.response.rect.height();
+                ui.ctx().data_mut(|d| d.insert_temp(id, h));
                 ui.add_space(40.0);
             });
     }
@@ -133,7 +138,7 @@ impl App {
             let x0 = rect.center().x - slot * nodes.len() as f32 / 2.0 + slot / 2.0;
             for (i, n) in nodes.iter().enumerate() {
                 let c = egui::pos2(x0 + slot * i as f32, rect.top() + 26.0);
-                paint_badge(ui.painter(), c, 19.0, os_icon(&n.os), Badge::of(n), 1.0);
+                paint_badge(ui.painter(), c, 19.0, os_icon(&n.os), labelled(n), 1.0);
                 // Two lines of name before it shortens, and the full name on hover.
                 let color = if n.online || n.is_self { TEXT } else { MUTED };
                 let mut job = egui::text::LayoutJob::single_section(
@@ -172,10 +177,10 @@ impl App {
             note(
                 ui,
                 &format!(
-                    "{online} of {} online. A green ring means online{}.",
+                    "{online} of {} online.{}",
                     s.all().count(),
                     if tagged {
-                        ", a square is a tagged device"
+                        " Squares are tagged devices."
                     } else {
                         ""
                     }
@@ -183,19 +188,19 @@ impl App {
             );
         }
 
-        ui.add_space(30.0);
+        ui.add_space(40.0);
         ui.add(
             egui::Label::new(
                 RichText::new(
                     "Made independently, not by Tailscale. Everything comes from the \
                      Tailscale already running on this machine.",
                 )
-                .size(11.5)
-                .color(FAINT),
+                .size(11.0)
+                .color(FAINT.gamma_multiply(0.85)),
             )
             .wrap(),
         );
-        ui.add_space(14.0);
+        ui.add_space(22.0);
         let act = Cell::new(None);
         buttons(
             ui,
@@ -215,17 +220,10 @@ impl App {
 
     fn page_os(&mut self, ui: &mut Ui) {
         heading(ui, "See what every device runs");
-        let me = self
-            .snap
-            .as_ref()
-            .map(|s| s.me.name.clone())
-            .unwrap_or_default();
         body(
             ui,
-            &format!(
-                "{me} already knows its own distro and kernel. Your other devices need \
-                 one extra permission from Tailscale before they share theirs."
-            ),
+            "Other devices need one extra permission from Tailscale before they share \
+             what they run.",
         );
         ui.add_space(20.0);
 
@@ -241,7 +239,7 @@ impl App {
                 preview_row(ui, &s.me, &self.os_of(&s.me), None);
                 if let Some(p) = peer {
                     divider(ui);
-                    let hint = (!self.api.connected).then_some("version after setup");
+                    let hint = (!self.api.connected).then_some("available after setup");
                     preview_row(ui, p, &self.os_of(p), hint);
                 }
             });
@@ -253,8 +251,8 @@ impl App {
         for (glyph, line) in [
             (
                 icon::CLOCK,
-                "An access token, made once in the Tailscale admin console, which calls \
-                 it a trust credential. About a minute.",
+                "An access token, called a trust credential in the admin console. \
+                 Takes about a minute.",
             ),
             (
                 icon::EYE,
@@ -262,7 +260,7 @@ impl App {
             ),
             (icon::KEY, "It is stored in your keyring."),
             (
-                icon::TRASH,
+                icon::PLUG,
                 "Remove it any time with Disconnect in the sidebar.",
             ),
         ] {
@@ -501,7 +499,7 @@ fn quiet_button(ui: &mut Ui, text: &str) -> egui::Response {
 fn progress(ui: &mut Ui, step: usize) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 4.0), egui::Sense::hover());
     ui.painter().text(
-        egui::pos2(rect.right(), rect.bottom() + 8.0),
+        egui::pos2(rect.right(), rect.bottom() + 5.0),
         egui::Align2::RIGHT_TOP,
         format!("{} of {STEPS}", step + 1),
         egui::FontId::proportional(11.5),
@@ -559,6 +557,15 @@ fn divider(ui: &mut Ui) {
     ui.add_space(9.0);
 }
 
+/// A device's badge where its name is labelled: the label marks this device,
+/// so the badge drops its fill.
+fn labelled(n: &crate::ts::Node) -> Badge {
+    Badge {
+        me: false,
+        ..Badge::of(n)
+    }
+}
+
 /// A device as the list shows it: ring, name, and what it runs.
 fn preview_row(ui: &mut Ui, n: &crate::ts::Node, os: &OsInfo, hint: Option<&str>) {
     ui.horizontal(|ui| {
@@ -568,7 +575,7 @@ fn preview_row(ui: &mut Ui, n: &crate::ts::Node, os: &OsInfo, hint: Option<&str>
             r.center(),
             15.0,
             os_icon(&n.os),
-            Badge::of(n),
+            labelled(n),
             1.0,
         );
         ui.add_space(8.0);
@@ -586,12 +593,12 @@ fn preview_row(ui: &mut Ui, n: &crate::ts::Node, os: &OsInfo, hint: Option<&str>
                 if let Some(d) = os.detail() {
                     ui.label(RichText::new(d).size(12.5).color(FAINT));
                 }
-                // What setup adds, shown as locked so the gap reads at a glance.
+                // What setup adds, shown as locked until then.
                 if let Some(h) = hint {
                     ui.label(
                         RichText::new(format!("{}   {h}", icon::LOCK))
                             .size(12.5)
-                            .color(AMBER.gamma_multiply(0.8)),
+                            .color(MUTED),
                     );
                 }
             });
