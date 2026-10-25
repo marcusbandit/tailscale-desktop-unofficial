@@ -280,7 +280,7 @@ mod tests {
             stable_id: id.into(),
             name: name.into(),
             hostname: format!("{name}-host"),
-            dns_name: format!("{name}.tail24c6a9.ts.net"),
+            dns_name: format!("{name}.tailfe12ab.ts.net"),
             created: chrono::DateTime::from_timestamp(created, 0),
             ..Default::default()
         }
@@ -359,7 +359,7 @@ mod tests {
         };
         let m = Mask::new(true, true, Some(&snap));
         assert_eq!(
-            m.external("can't send to nemurenai (nemurenai.tail24c6a9.ts.net) as marcus@example.com"),
+            m.external("can't send to nemurenai (nemurenai.tailfe12ab.ts.net) as marcus@example.com"),
             "can't send to device-1 (device-1.tail••••.ts.net) as m•••@•••"
         );
         // The app's own text already carries masked names; it keeps its words.
