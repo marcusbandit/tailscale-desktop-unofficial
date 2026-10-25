@@ -214,7 +214,7 @@ impl App {
     }
 
     fn page_os(&mut self, ui: &mut Ui) {
-        heading(ui, "Know what every device runs");
+        heading(ui, "See what every device runs");
         let me = self
             .snap
             .as_ref()
@@ -223,8 +223,8 @@ impl App {
         body(
             ui,
             &format!(
-                "{me} already knows its own distro and kernel. For your other devices, \
-                 Tailscale only shares that through its web API."
+                "{me} already knows its own distro and kernel. Your other devices need \
+                 one extra permission from Tailscale before they share theirs."
             ),
         );
         ui.add_space(20.0);
@@ -241,22 +241,36 @@ impl App {
                 preview_row(ui, &s.me, &self.os_of(&s.me), None);
                 if let Some(p) = peer {
                     divider(ui);
-                    let hint = (!self.api.connected).then_some("full version after setup");
+                    let hint = (!self.api.connected).then_some("version after setup");
                     preview_row(ui, p, &self.os_of(p), hint);
                 }
             });
         }
 
-        ui.add_space(22.0);
+        ui.add_space(16.0);
         ui.label(RichText::new("What it takes").strong().size(15.0));
         ui.add_space(6.0);
-        for line in [
-            "One credential, made once in the Tailscale admin console. About a minute.",
-            "It can only read. It can't change anything on your tailnet.",
-            "It is kept in your keyring, and Disconnect in the sidebar removes it.",
+        for (glyph, line) in [
+            (
+                icon::CLOCK,
+                "An access token, made once in the Tailscale admin console, which calls \
+                 it a trust credential. About a minute.",
+            ),
+            (
+                icon::EYE,
+                "It can only read. It can't change anything on your tailnet.",
+            ),
+            (icon::KEY, "It is stored in your keyring."),
+            (
+                icon::TRASH,
+                "Remove it any time with Disconnect in the sidebar.",
+            ),
         ] {
             ui.horizontal_top(|ui| {
-                ui.label(RichText::new(icon::CHECK).color(GREEN));
+                ui.add_sized(
+                    vec2(20.0, 18.0),
+                    egui::Label::new(RichText::new(glyph).color(MUTED)),
+                );
                 ui.add(egui::Label::new(RichText::new(line).color(MUTED)).wrap());
             });
             ui.add_space(2.0);
@@ -560,15 +574,25 @@ fn preview_row(ui: &mut Ui, n: &crate::ts::Node, os: &OsInfo, hint: Option<&str>
         ui.add_space(8.0);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
-            ui.label(RichText::new(&n.name).strong());
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
+                ui.label(RichText::new(&n.name).strong());
+                if n.is_self {
+                    ui.label(RichText::new("this device").size(11.5).color(ACCENT));
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 12.0;
                 ui.label(RichText::new(os.title()).size(12.5).color(MUTED));
                 if let Some(d) = os.detail() {
                     ui.label(RichText::new(d).size(12.5).color(FAINT));
                 }
+                // What setup adds, shown as locked so the gap reads at a glance.
                 if let Some(h) = hint {
-                    ui.label(RichText::new(h).size(12.5).italics().color(FAINT));
+                    ui.label(
+                        RichText::new(format!("{}   {h}", icon::LOCK))
+                            .size(12.5)
+                            .color(AMBER.gamma_multiply(0.8)),
+                    );
                 }
             });
         });

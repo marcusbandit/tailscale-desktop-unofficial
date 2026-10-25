@@ -47,6 +47,10 @@ pub mod icon {
     pub const TRASH: &str = "\u{f1f8}";
     pub const BAN: &str = "\u{f05e}";
     pub const CHECK: &str = "\u{f00c}";
+    pub const CLOCK: &str = "\u{f017}";
+    pub const EYE: &str = "\u{f06e}";
+    pub const KEY: &str = "\u{f084}";
+    pub const LOCK: &str = "\u{f023}";
 }
 
 pub fn os_icon(os: &str) -> &'static str {
