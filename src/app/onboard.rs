@@ -130,7 +130,7 @@ impl App {
         // The user's own devices, drawn the way the app draws them everywhere.
         if let Some(s) = &self.snap {
             let mut nodes: Vec<_> = s.all().collect();
-            nodes.sort_by_key(|n| display_order(n));
+            nodes.sort_by_key(|n| display_order(n, &self.mask));
             nodes.truncate(8);
             let slot = (ui.available_width() / nodes.len().max(1) as f32).min(84.0);
             let (rect, _) =
@@ -352,7 +352,7 @@ impl App {
             note_color(ui, "A client secret starts with tskey-client-.", AMBER);
         }
         if let Some(e) = &o.error {
-            note_color(ui, e, RED);
+            note_color(ui, &self.mask.external(e), RED);
         }
 
         ui.add_space(20.0);
@@ -411,7 +411,7 @@ impl App {
         if let Some(s) = &self.snap {
             ui.add_space(20.0);
             let mut nodes: Vec<_> = s.all().collect();
-            nodes.sort_by_key(|n| display_order(n));
+            nodes.sort_by_key(|n| display_order(n, &self.mask));
             panel(ui, |ui| {
                 let last = nodes.len().saturating_sub(1);
                 for (i, n) in nodes.iter().enumerate() {

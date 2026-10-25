@@ -235,6 +235,7 @@ impl App {
     fn set(&mut self, f: impl FnOnce(&mut Settings)) {
         f(&mut self.settings);
         if let Err(e) = self.settings.save() {
+            let e = self.mask.text(&e);
             self.toast(format!("Could not save settings: {e}"), true);
         }
         self.remask();
@@ -242,6 +243,10 @@ impl App {
 
     fn toggle_privacy(&mut self) {
         self.set(|s| s.privacy = !s.privacy);
+        // Toasts are masked when made, so the ones from before go.
+        if self.settings.privacy {
+            self.toasts.clear();
+        }
         let text = if self.settings.privacy {
             "Privacy mode is on"
         } else {
@@ -372,9 +377,10 @@ impl App {
                         );
                     }
                     match r {
-                        Ok(t) if !t.is_empty() => self.toast(t, false),
+                        Ok(t) if !t.is_empty() => self.toast(self.mask.text(&t), false),
                         Ok(_) => {}
-                        Err(e) => self.toast(e, true),
+                        // Errors come from the CLI or the system, in their own words.
+                        Err(e) => self.toast(self.mask.external(&e), true),
                     }
                     self.wake.send(false).ok();
                 }
@@ -483,6 +489,7 @@ impl App {
         self.onboard = None;
         self.connect_attempt += 1;
         if let Err(e) = onboard::mark_done() {
+            let e = self.mask.text(&e);
             self.toast(format!("Could not save that the tour is done: {e}"), true);
         }
     }
@@ -838,9 +845,9 @@ fn step(ui: &mut Ui, n: &str, text: &str, add: impl FnOnce(&mut Ui)) {
     });
 }
 
-/// This device first, then online before offline, then by name.
-fn display_order(n: &Node) -> (bool, bool, String) {
-    (!n.is_self, !n.online, n.name.to_lowercase())
+/// This device first, then online before offline, then by name as shown.
+fn display_order(n: &Node, mask: &Mask) -> (bool, bool, String) {
+    (!n.is_self, !n.online, mask.order(n))
 }
 
 /// The one surface style for grouped content.
@@ -889,14 +896,6 @@ fn bytes(n: u64) -> String {
         1_048_576..1_073_741_824 => format!("{:.1} MB", f / 1_048_576.0),
         _ => format!("{:.2} GB", f / 1_073_741_824.0),
     }
-}
-
-/// "relay ams" reads "Relay ams" at the start of a line.
-fn sentence(s: &str) -> String {
-    let mut c = s.chars();
-    c.next()
-        .map(|f| f.to_uppercase().chain(c).collect())
-        .unwrap_or_default()
 }
 
 fn connection(n: &Node) -> (String, Color32) {
@@ -961,13 +960,14 @@ impl eframe::App for App {
             )
             .show(ui, |ui| self.top_bar(ui));
 
-        if let Some(s) = self.snap.clone() {
-            let health: Vec<String> = s
-                .health
+        let health: Vec<String> = self.snap.as_ref().map_or_else(Vec::new, |s| {
+            s.health
                 .iter()
                 .filter(|h| !self.dismissed.contains(*h))
                 .cloned()
-                .collect();
+                .collect()
+        });
+        if let Some(prefs) = self.snap.as_ref().map(|s| s.prefs.clone()) {
             if !health.is_empty() {
                 egui::Panel::top("health")
                     .frame(
@@ -977,7 +977,7 @@ impl eframe::App for App {
                     )
                     .show(ui, |ui| {
                         for h in health {
-                            self.health_row(ui, &s, &h);
+                            self.health_row(ui, &prefs, &h);
                         }
                     });
             }
@@ -994,10 +994,11 @@ impl eframe::App for App {
             )
             .show(ui, |ui| self.sidebar(ui));
 
-        let show_detail = self
-            .selected
-            .as_ref()
-            .is_some_and(|id| self.snap.as_ref().is_some_and(|s| s.node(id).is_some()));
+        let show_detail = self.view != View::Settings
+            && self
+                .selected
+                .as_ref()
+                .is_some_and(|id| self.snap.as_ref().is_some_and(|s| s.node(id).is_some()));
         if show_detail {
             egui::Panel::right("detail")
                 .exact_size(340.0)
@@ -1204,21 +1205,17 @@ impl App {
     }
 
     /// One health warning from tailscaled, with a way to fix it when there is one.
-    fn health_row(&mut self, ui: &mut Ui, s: &Snapshot, h: &str) {
+    /// The buttons are placed first and the text wraps in what is left.
+    fn health_row(&mut self, ui: &mut Ui, prefs: &ts::Prefs, h: &str) {
         let ctx = ui.ctx().clone();
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(icon::WARN).color(AMBER));
-            ui.label(RichText::new(self.mask.text(h)).color(AMBER).size(12.5));
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let close = egui::Button::new(RichText::new(icon::CLOSE).size(12.0).color(AMBER))
-                    .frame(false)
-                    .min_size(vec2(26.0, 26.0));
-                if ui.add(close).on_hover_text("Hide this warning").clicked() {
-                    self.dismissed.insert(h.to_owned());
-                }
-                if !ts::is_forwarding_warning(h) {
-                    return;
-                }
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let close = egui::Button::new(RichText::new(icon::CLOSE).size(12.0).color(AMBER))
+                .frame(false)
+                .min_size(vec2(26.0, 26.0));
+            if ui.add(close).on_hover_text("Hide this warning").clicked() {
+                self.dismissed.insert(h.to_owned());
+            }
+            if ts::is_forwarding_warning(h) {
                 ui.add_space(4.0);
                 let more = egui::Button::new(
                     RichText::new(format!("How to fix  {}", icon::EXTERNAL))
@@ -1233,8 +1230,8 @@ impl App {
                 {
                     ctx.open_url(egui::OpenUrl::new_tab(ts::FORWARDING_URL));
                 }
-                if s.prefs.advertises_exit() {
-                    let prefs = s.prefs.clone();
+                if prefs.advertises_exit() {
+                    let prefs = prefs.clone();
                     if ui
                         .button(RichText::new("Stop offering exit node").size(12.5))
                         .on_hover_text("Other devices can no longer send their traffic through this one")
@@ -1260,13 +1257,22 @@ impl App {
                     .on_hover_text("Asks for your password, then turns forwarding on now and after every reboot")
                     .clicked()
                 {
-                    self.act(&ctx, "forwarding", || {
-                        ts::enable_ip_forwarding().map(|_| "IP forwarding is on".into())
+                    let prefs = prefs.clone();
+                    self.act(&ctx, "forwarding", move || {
+                        ts::enable_ip_forwarding(&prefs).map(|_| "IP forwarding is on".into())
                     });
                 }
                 if busy {
                     ui.add(egui::Spinner::new());
                 }
+            }
+            ui.add_space(8.0);
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.label(RichText::new(icon::WARN).color(AMBER));
+                ui.add(
+                    egui::Label::new(RichText::new(self.mask.external(h)).color(AMBER).size(12.5))
+                        .wrap(),
+                );
             });
         });
     }
@@ -1313,7 +1319,7 @@ impl App {
             ui.add_space(8.0);
             ui.label(RichText::new("Can't reach tailscaled").heading());
             if let Some(e) = &self.error {
-                ui.label(RichText::new(self.mask.text(e)).color(MUTED));
+                ui.label(RichText::new(self.mask.external(e)).color(MUTED));
             }
             ui.add_space(12.0);
             if primary_button(ui, "Start tailscaled (asks for sudo)").clicked() {
@@ -1384,7 +1390,7 @@ impl App {
             .filter(|n| self.filter.admits(n) && self.matches(n, &self.search))
             .collect();
         // This device, then online, then offline; offline rows dim themselves.
-        nodes.sort_by_key(|n| display_order(n));
+        nodes.sort_by_key(|n| display_order(n, &self.mask));
 
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -1435,9 +1441,9 @@ impl App {
                 has(&n.user_login, v) || has(&n.user_display, v)
             } else if let Some(v) = w.strip_prefix("is:") {
                 match v {
-                    "online" => n.online || n.is_self,
-                    "offline" => !n.online && !n.is_self,
-                    "tagged" => !n.tags.is_empty(),
+                    "online" => Filter::Online.admits(n),
+                    "offline" => !Filter::Online.admits(n),
+                    "tagged" => Filter::Tagged.admits(n),
                     "exit" => n.exit_node_option,
                     _ => false,
                 }
@@ -1541,6 +1547,7 @@ impl App {
             .pings
             .get(&n.stable_id)
             .and_then(|p| p.results.iter().rev().find_map(|r| r.as_ref().ok()));
+        let relayed = n.cur_addr.is_empty() && n.active && !n.relay.is_empty();
         let status = if n.is_self {
             None
         } else if !n.online {
@@ -1548,6 +1555,12 @@ impl App {
                 format!("Seen {}", ago(n.last_seen)),
                 FAINT,
                 format!("Last seen {}", local_time(n.last_seen)),
+            ))
+        } else if relayed {
+            Some((
+                format!("Relay {}", n.relay),
+                AMBER,
+                "No direct path right now; traffic goes through a relay".to_owned(),
             ))
         } else if let Some(p) = last_ping {
             let (path, col) = if p.direct {
@@ -1561,8 +1574,7 @@ impl App {
                 "Last ping".to_owned(),
             ))
         } else {
-            let (c, col) = connection(n);
-            (col == AMBER).then(|| (sentence(&c), col, "No direct path yet".to_owned()))
+            None
         };
 
         ui.scope_builder(centered(name_r), |ui| {
@@ -1573,6 +1585,11 @@ impl App {
             ui.horizontal(|ui| {
                 let name = RichText::new(mask.name(n)).strong().size(14.5);
                 ui.label(if dim { name.color(MUTED) } else { name });
+                // Blocked access comes first, so it is the last chip to be cut off.
+                if let Some((text, color, a)) = &blocked {
+                    let (_, _, how) = access_text(a);
+                    chip(ui, format!("{}  {text}", icon::BAN), *color).on_hover_text(how);
+                }
                 if n.is_self {
                     chip(ui, "you", ACCENT);
                 }
@@ -1583,10 +1600,6 @@ impl App {
                 }
                 for t in &n.tags {
                     chip(ui, format!("{}  {t}", icon::TAG), PURPLE);
-                }
-                if let Some((text, color, a)) = &blocked {
-                    let (_, _, how) = access_text(a);
-                    chip(ui, format!("{}  {text}", icon::BAN), *color).on_hover_text(how);
                 }
             });
             ui.horizontal(|ui| {
@@ -1686,9 +1699,11 @@ impl App {
         if dropped.is_empty() {
             return;
         }
+        // Settings hides the selection, so a drop there has no target.
         let target = self
             .selected
             .as_ref()
+            .filter(|_| self.view != View::Settings)
             .and_then(|id| self.snap.as_ref()?.node(id).cloned());
         match target {
             Some(n) if n.taildrop_ok() => {
@@ -1788,11 +1803,13 @@ impl App {
                                     Ok(p) => {
                                         ui.horizontal(|ui| {
                                             ui.label(RichText::new(format!("{:>6.1} ms", p.latency_ms)).monospace().color(if p.direct { GREEN } else { AMBER }));
-                                            ui.label(RichText::new(format!("via {}", mask.text(&p.via))).size(12.0).color(MUTED));
+                                            // A direct path names the public endpoint; hide it whole.
+                                            let via = if p.direct && mask.on { "a direct path".to_owned() } else { mask.external(&p.via) };
+                                            ui.label(RichText::new(format!("via {via}")).size(12.0).color(MUTED));
                                         });
                                     }
                                     Err(e) => {
-                                        ui.label(RichText::new(mask.text(e)).size(12.0).color(RED));
+                                        ui.label(RichText::new(mask.external(e)).size(12.0).color(RED));
                                     }
                                 }
                             }
@@ -1959,7 +1976,7 @@ impl App {
             section_title(ui, "Send to");
             ui.add_space(6.0);
             let mut peers: Vec<&Node> = s.peers.iter().collect();
-            peers.sort_by_key(|p| (!p.taildrop_ok(), p.name.to_lowercase()));
+            peers.sort_by_key(|p| (!p.taildrop_ok(), self.mask.order(p)));
             for p in peers {
                 card(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -2010,7 +2027,7 @@ impl App {
                             };
                             ui.horizontal(|ui| {
                                 ui.label(RichText::new(g).color(c.gamma_multiply(fade)));
-                                ui.label(RichText::new(self.mask.text(&t.text)).color(TEXT.gamma_multiply(fade)));
+                                ui.label(RichText::new(&t.text).color(TEXT.gamma_multiply(fade)));
                             });
                         });
                     ui.add_space(6.0);

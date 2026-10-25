@@ -475,12 +475,25 @@ pub fn is_forwarding_warning(text: &str) -> bool {
 }
 
 /// Turns IP forwarding on now and at every boot, as Tailscale's guide does, so
-/// this device can act as an exit node or subnet router.
-pub fn enable_ip_forwarding() -> Result<(), String> {
+/// this device can act as an exit node or subnet router. The IPv6 line may fail
+/// on hosts without IPv6, which the leading dash allows.
+pub fn enable_ip_forwarding(prefs: &Prefs) -> Result<(), String> {
     let script = format!(
-        "printf 'net.ipv4.ip_forward = 1\\nnet.ipv6.conf.all.forwarding = 1\\n' > {FORWARDING_FILE} && sysctl -p {FORWARDING_FILE}"
+        "printf 'net.ipv4.ip_forward = 1\\n-net.ipv6.conf.all.forwarding = 1\\n' > {FORWARDING_FILE} && sysctl -e -p {FORWARDING_FILE}"
     );
-    run_as_root(&["sh", "-c", &script])
+    run_as_root(&["sh", "-c", &script])?;
+    // The sudo fallback can't always report how it went, so look.
+    let on = std::fs::read_to_string("/proc/sys/net/ipv4/ip_forward")
+        .is_ok_and(|v| v.trim() == "1");
+    if !on {
+        return Err("IP forwarding is still off".into());
+    }
+    // tailscaled re-checks forwarding when its prefs change; setting the same
+    // routes again is enough to clear its warning.
+    patch_prefs(json!({
+        "AdvertiseRoutes": prefs.advertise_routes.clone().unwrap_or_default(),
+        "AdvertiseRoutesSet": true,
+    }))
 }
 
 /// Runs a command as root. pkexec when a polkit agent is around to ask, otherwise

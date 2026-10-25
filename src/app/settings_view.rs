@@ -25,11 +25,12 @@ impl App {
             ui.set_max_width(WIDTH.min(ui.available_width()));
             ui.label(RichText::new("Settings").heading());
             ui.add_space(14.0);
-            match self.snap.clone().filter(|s| s.running()) {
+            // Prefs can change while Tailscale is off, ready for when it is back.
+            match self.snap.clone() {
                 Some(s) => self.routing(ui, &s),
                 None => group(ui, "This device", |ui| {
                     ui.label(
-                        RichText::new("Routing settings show while Tailscale is running.")
+                        RichText::new("Routing settings show once tailscaled is running.")
                             .color(MUTED),
                     );
                 }),
@@ -248,7 +249,7 @@ impl App {
                     },
                 );
                 if let Some(e) = &self.api.error {
-                    ui.label(RichText::new(self.mask.text(e)).size(11.5).color(FAINT));
+                    ui.label(RichText::new(self.mask.external(e)).size(11.5).color(FAINT));
                 }
             } else {
                 row(

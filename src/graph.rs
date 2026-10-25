@@ -170,7 +170,7 @@ pub fn show(
             } else {
                 format!("1{}", n.tags.join(","))
             };
-            (!n.is_self, kind, n.name.clone())
+            (!n.is_self, kind, mask.order(n))
         });
         order
     };
