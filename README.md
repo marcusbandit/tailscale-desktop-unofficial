@@ -6,12 +6,12 @@ A small native Linux window for Tailscale, written in Rust with egui. It talks t
 `tailscaled` over its socket, so it needs no API key and no web UI. You see every device on your
 tailnet, who can reach whom, and you can send files with Taildrop, all without opening a browser.
 
-[![Support me on Ko-fi](https://img.shields.io/badge/Ko--fi-support%20the%20app-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/marcusbandit)
-
 > **Unofficial.** This app is made independently and is not affiliated with, endorsed by or made
 > by Tailscale Inc. Tailscale and the Tailscale logo are trademarks of Tailscale Inc. The logo is
 > used so people can see at once what the app is for. Its top right dot is lit blue to mark it as
 > the unofficial one. If anyone at Tailscale wants this code, it is theirs to take.
+
+[![Support me on Ko-fi](https://img.shields.io/badge/Ko--fi-support%20the%20app-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/marcusbandit)
 
 ![The device list, with each device's OS logo, status and address. Privacy mode is on, so addresses are masked](assets/screenshots/devices.png)
 
@@ -43,14 +43,16 @@ tour in Settings, or in the menu behind the status pill, opens it again.
 
 | Access graph | Taildrop |
 | --- | --- |
-| ![The access graph, devices as nodes with arrows for one-way access](assets/screenshots/graph.png) | ![Taildrop, a drop zone for files and the devices to send them to](assets/screenshots/taildrop.png) |
+| ![The access graph, this device in the middle with lines to the devices it can reach](assets/screenshots/graph.png) | ![Taildrop, a drop zone for files and the devices to send them to](assets/screenshots/taildrop.png) |
 | **Settings** | **First launch** |
 | ![Settings with the exit node picker and network switches](assets/screenshots/settings.png) | ![The first page of the welcome walkthrough](assets/screenshots/onboarding.png) |
 
 ## Install
 
-You need Linux with `tailscaled` running, and a Rust toolchain. On Debian or Ubuntu the build
-also wants `libxkbcommon-dev libwayland-dev libgtk-3-dev`.
+You need Linux with `tailscaled` running, a Rust toolchain, and `python3` for the install
+script. On Debian or Ubuntu the build also wants `pkg-config libxkbcommon-dev libwayland-dev`.
+At runtime, Choose files in Taildrop opens the file picker through `xdg-desktop-portal`, and the
+optional OS versions step stores its secret with `secret-tool` from `libsecret-tools`.
 
     git clone https://github.com/marcusbandit/tailscale-desktop-unofficial
     cd tailscale-desktop-unofficial
@@ -107,9 +109,12 @@ quits. `TSDU_VIEW=graph|taildrop|settings` picks the view, `TSDU_MENU=1` opens t
 `TSDU_PRIVACY=1` and `TSDU_PRIVACY_NAMES=1` turn privacy mode on, `TSDU_SHOW_IPS=0` and
 `TSDU_SHOW_KERNEL=1` set the list columns, `TSDU_SCROLL=<px>` holds Settings scrolled down,
 `TSDU_SELECT=<device>` opens a device, and `TSDU_PING=1` pings it first. `TSDU_ONBOARD=0..3` opens
-the first-run walkthrough at that page. `TSDU_PAN_AT=<seconds>` throws the graph camera off screen
-at that moment to test that it returns. `scripts/shot.sh NAME [VAR=value ...]` runs all of this
-inside a headless gamescope and saves the PNG to `captures/`.
+the first-run walkthrough at that page, and `TSDU_SCENE=<n>` or `<n>:<click>` holds its setup
+replay on one screen. `TSDU_STAGE=a:b` stages those files in Taildrop and `TSDU_TARGETS=x,y` picks
+those devices. `TSDU_PAN_AT=<seconds>` throws the graph camera off screen
+at that moment to test that it returns. `scripts/shot.sh NAME [VAR=value ...]` runs the debug binary
+inside a headless `gamescope` and saves the PNG to `captures/`. It does not build, so run
+`cargo build` first.
 
 ## Icons
 

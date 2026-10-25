@@ -19,3 +19,8 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+The MIT grant above covers the code. It does not cover the Tailscale name or
+the Tailscale logo in assets/icon.svg, assets/icon-256.png and assets/mark.svg,
+which are trademarks of Tailscale Inc. The OS logos in assets/os-icons.ttf
+carry their own licenses, listed in assets/os-icons-LICENSE.txt.
