@@ -221,7 +221,9 @@ pub fn text_at_mid(p: &Painter, left_mid: Pos2, galley: Arc<Galley>, color: Colo
         }
         None => left_mid.y - galley.size().y / 2.0,
     };
-    p.galley(egui::pos2(left_mid.x, top), galley, color);
+    // The galley may carry its own color from layout; this one wins.
+    p.add(egui::epaint::TextShape::new(egui::pos2(left_mid.x, top), galley, color)
+        .with_override_text_color(color));
 }
 
 /// Text placed with `text_at_mid`, for painters that draw their own rows.
@@ -332,3 +334,19 @@ pub fn paint_text_right(p: &Painter, right_mid: Pos2, text: &str, size: f32, col
     let x = right_mid.x - g.size().x;
     text_at_mid(p, egui::pos2(x, right_mid.y), g, color);
 }
+
+/// A centered column at most `max` wide, the frame for Taildrop and Settings.
+pub fn column(ui: &mut Ui, max: f32, add: impl FnOnce(&mut Ui)) {
+    let w = max.min(ui.available_width());
+    let pad = ((ui.available_width() - w) / 2.0).max(0.0);
+    ui.horizontal(|ui| {
+        ui.add_space(pad);
+        ui.vertical(|ui| {
+            ui.set_width(w);
+            add(ui);
+        });
+    });
+}
+
+/// How wide Taildrop and Settings are.
+pub const COLUMN: f32 = 760.0;

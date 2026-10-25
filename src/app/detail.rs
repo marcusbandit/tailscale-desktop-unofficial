@@ -318,12 +318,13 @@ impl App {
         for o in s.all().filter(|o| o.stable_id != n.stable_id) {
             let out = m.get(&n.stable_id, &o.stable_id).allowed();
             let inn = m.get(&o.stable_id, &n.stable_id).allowed();
+            // Only what is known both ways is stated; half-known pairs are unknown.
             let g = match (out, inn) {
                 (Some(true), Some(true)) => 0,
-                (Some(true), _) => 1,
-                (_, Some(true)) => 2,
-                (None, None) => 4,
-                _ => 3,
+                (Some(true), Some(false)) => 1,
+                (Some(false), Some(true)) => 2,
+                (Some(false), Some(false)) => 3,
+                _ => 4,
             };
             groups[g].push(o.clone());
         }

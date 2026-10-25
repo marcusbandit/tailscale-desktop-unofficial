@@ -10,8 +10,6 @@ use crate::theme::{icon, *};
 use crate::ts::{self, Node};
 use crate::widgets::{self, Btn};
 
-const WIDTH: f32 = 760.0;
-
 /// What the Taildrop screen remembers between frames.
 #[derive(Default)]
 pub(super) struct DropState {
@@ -21,6 +19,10 @@ pub(super) struct DropState {
     /// Where each device chip was drawn last frame, so a file dropped on one
     /// goes straight to that device.
     pub chips: Vec<(Rect, String)>,
+    /// The pointer when a file drag came over the window. Some systems don't
+    /// move the pointer during a drag, so a drop only counts as onto a chip
+    /// when the pointer moved since.
+    pub drag_from: Option<Option<Pos2>>,
 }
 
 impl App {
@@ -34,6 +36,10 @@ impl App {
         // A device that went away can't stay picked.
         self.drop.targets.retain(|id| ready.iter().any(|p| &p.stable_id == id));
         self.drop.chips.clear();
+        let dragging = ctx.input(|i| !i.raw.hovered_files.is_empty());
+        if dragging && self.drop.drag_from.is_none() {
+            self.drop.drag_from = Some(ctx.input(|i| i.pointer.latest_pos()));
+        }
         let picked: Vec<Node> = ready
             .iter()
             .filter(|p| self.drop.targets.contains(&p.stable_id))
@@ -41,12 +47,7 @@ impl App {
             .collect();
 
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            let w = WIDTH.min(ui.available_width());
-            let pad = ((ui.available_width() - w) / 2.0).max(0.0);
-            ui.horizontal(|ui| {
-                ui.add_space(pad);
-                ui.vertical(|ui| {
-                    ui.set_width(w);
+            widgets::column(ui, widgets::COLUMN, |ui| {
                     widgets::page_title(ui, "Taildrop", "Send files between your devices", |_| {});
                     self.drop_zone(ui, &ctx, &picked);
                     ui.add_space(sp::XL);
@@ -106,7 +107,6 @@ impl App {
                     ui.add_space(sp::XL);
                     self.inbox(ui, &ctx, &s.waiting_files);
                     ui.add_space(sp::XL);
-                });
             });
         });
     }
@@ -297,17 +297,19 @@ impl App {
             None => return,
         };
         let pos = ctx.input(|i| i.pointer.latest_pos());
-        let on_chip = pos.and_then(|p| {
+        let moved = self.drop.drag_from.take().is_some_and(|from| from != pos);
+        let on_chip = pos.filter(|_| moved).and_then(|p| {
             self.drop
                 .chips
                 .iter()
                 .find(|(r, _)| r.contains(p))
                 .map(|(_, id)| id.clone())
         });
-        let ids: Vec<String> = match on_chip {
+        let mut ids: Vec<String> = match on_chip {
             Some(id) => vec![id],
             None => self.drop.targets.iter().cloned().collect(),
         };
+        ids.sort();
         let targets: Vec<(String, String)> = ids
             .iter()
             .filter_map(|id| s.node(id))
@@ -318,16 +320,34 @@ impl App {
             self.toast("Pick a device first, or drop the files onto one", true);
             return;
         }
+        if self.busy.contains("send-many") {
+            self.toast("Still sending the last files; drop these again when it's done", true);
+            return;
+        }
         self.act(ctx, "send-many", move || send_to_all(&files, &targets));
     }
 }
 
+/// Tries every device even when one fails, and says which got the files.
 fn send_to_all(files: &[PathBuf], targets: &[(String, String)]) -> Result<String, String> {
-    let mut sent = Vec::new();
+    let (mut ok, mut failed) = (Vec::new(), Vec::new());
     for (ip, name) in targets {
-        sent.push(send_all(files, ip, name)?);
+        match send_all(files, ip, name) {
+            Ok(_) => ok.push(name.clone()),
+            Err(e) => failed.push(format!("{name}: {e}")),
+        }
     }
-    Ok(sent.join("; "))
+    let n = files.len();
+    let what = format!("{n} file{}", if n == 1 { "" } else { "s" });
+    match (ok.is_empty(), failed.is_empty()) {
+        (_, true) => Ok(format!("Sent {what} to {}", ok.join(", "))),
+        (true, false) => Err(format!("Could not send {what}. {}", failed.join("; "))),
+        (false, false) => Err(format!(
+            "Sent {what} to {}, but not to {}",
+            ok.join(", "),
+            failed.join("; ")
+        )),
+    }
 }
 
 /// A row that opens and closes a list, chevron first.

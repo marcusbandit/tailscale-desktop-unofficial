@@ -10,8 +10,6 @@ use crate::widgets::{self, Btn};
 use crate::theme::*;
 use crate::ts::{self, Node, Snapshot};
 
-const WIDTH: f32 = 760.0;
-
 impl App {
     pub(super) fn settings_view(&mut self, ui: &mut Ui) {
         let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]);
@@ -23,22 +21,12 @@ impl App {
             area = area.vertical_scroll_offset(y);
         }
         area.show(ui, |ui| {
-            // One centered column, the same width as Taildrop's.
-            let w = WIDTH.min(ui.available_width());
-            let pad = ((ui.available_width() - w) / 2.0).max(0.0);
-            ui.horizontal(|ui| {
-                ui.add_space(pad);
-                ui.vertical(|ui| {
-                    ui.set_width(w);
-                    self.settings_column(ui);
-                });
-            });
+            widgets::column(ui, widgets::COLUMN, |ui| self.settings_column(ui));
         });
     }
 
     fn settings_column(&mut self, ui: &mut Ui) {
-        {
-            widgets::page_title(ui, "Settings", "", |_| {});
+        widgets::page_title(ui, "Settings", "", |_| {});
             // Prefs can change while Tailscale is off, ready for when it is back.
             match self.snap.clone() {
                 Some(s) => self.routing(ui, &s),
@@ -55,7 +43,6 @@ impl App {
             self.help(ui);
             self.about(ui);
             ui.add_space(sp::XL);
-        }
     }
 
     fn routing(&mut self, ui: &mut Ui, s: &Snapshot) {

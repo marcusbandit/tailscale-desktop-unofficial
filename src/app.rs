@@ -379,6 +379,23 @@ impl App {
                         }
                     }
                     let first = self.snap.is_none();
+                    // A closed warning that went away is forgotten, so it gets
+                    // its banner again if it ever comes back.
+                    if s.running() {
+                        let gone: Vec<String> = self
+                            .settings
+                            .hidden_warnings
+                            .iter()
+                            .filter(|h| !s.health.contains(h))
+                            .cloned()
+                            .collect();
+                        if !gone.is_empty() {
+                            for h in &gone {
+                                self.dismissed.remove(h);
+                            }
+                            self.set(|st| st.hidden_warnings.retain(|h| !gone.contains(h)));
+                        }
+                    }
                     self.snap = Some(s);
                     self.error = None;
                     self.rebuild();
@@ -409,9 +426,11 @@ impl App {
                     // so the fixed warning is closed here.
                     if key == "forwarding" && r.is_ok() {
                         let health = self.snap.as_ref().map(|s| s.health.clone());
+                        // Only for this session: if forwarding is lost again
+                        // later, the banner should come back.
                         for h in health.unwrap_or_default() {
                             if ts::is_forwarding_warning(&h) {
-                                self.hide_warning(&h);
+                                self.dismissed.insert(h);
                             }
                         }
                     }
@@ -1142,8 +1161,8 @@ impl App {
             .unwrap_or_default();
         let (warnings, fresh) = self.warnings();
         // The banner only shows on the device list; anywhere else the dot stands in.
-        let banner_up = self.view == View::Devices && !fresh.is_empty();
-        let resp = pill(ui, dot, label, &via, !warnings.is_empty() && !banner_up);
+        let all_bannered = self.view == View::Devices && fresh.len() == warnings.len();
+        let resp = pill(ui, dot, label, &via, !warnings.is_empty() && !all_bannered);
         let mut popup = egui::Popup::menu(&resp)
             .align(egui::RectAlign::BOTTOM_END)
             .gap(6.0)
@@ -1471,7 +1490,7 @@ impl App {
             &format!("{online} of {} online", s.all().count()),
             |_| {},
         );
-        if let Some(h) = self.warnings().1.first().cloned() {
+        for h in self.warnings().1 {
             self.banner(ui, &s.prefs, &h);
         }
         ui.horizontal(|ui| {
