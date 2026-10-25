@@ -2,6 +2,8 @@ mod access;
 mod app;
 mod graph;
 mod osinfo;
+mod privacy;
+mod settings;
 mod shot;
 mod theme;
 mod ts;

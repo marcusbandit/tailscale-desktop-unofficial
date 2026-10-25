@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -11,16 +12,18 @@ use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Margin, RichText, Sense,
     Stroke, Ui, UiBuilder, vec2,
 };
-use serde_json::json;
 
 use crate::access::{self, Access, Probes, Source};
 use crate::graph::{self, GraphState};
 use crate::osinfo::{self, OsInfo};
+use crate::privacy::Mask;
+use crate::settings::Settings;
 use crate::theme::{icon, *};
 use crate::ts::{self, Node, Pong, Snapshot};
 
 mod onboard;
 mod replay;
+mod settings_view;
 
 enum Msg {
     Snapshot(Result<Snapshot, String>),
@@ -43,6 +46,7 @@ enum View {
     Devices,
     Graph,
     Taildrop,
+    Settings,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -50,6 +54,16 @@ enum Filter {
     All,
     Online,
     Tagged,
+}
+
+impl Filter {
+    fn admits(self, n: &Node) -> bool {
+        match self {
+            Filter::All => true,
+            Filter::Online => n.online || n.is_self,
+            Filter::Tagged => !n.tags.is_empty(),
+        }
+    }
 }
 
 struct Toast {
@@ -95,6 +109,13 @@ pub struct App {
     /// Bumped by every connect attempt and every cancel, so a check that comes
     /// back after the dialog closed is ignored.
     connect_attempt: u64,
+    settings: Settings,
+    /// How privacy mode shows names and addresses; rebuilt when either changes.
+    mask: Rc<Mask>,
+    /// Health warnings closed this session.
+    dismissed: HashSet<String>,
+    /// Test hook: open the status menu on the first frame.
+    open_menu: bool,
 }
 
 #[derive(Default)]
@@ -158,7 +179,12 @@ impl App {
                 osinfo::load_cache(),
             ),
         };
+        let settings = Settings::load();
         Self {
+            mask: Rc::new(Mask::new(settings.privacy, settings.privacy_names, None)),
+            settings,
+            dismissed: HashSet::new(),
+            open_menu: std::env::var("TSDU_MENU").is_ok(),
             tx,
             rx,
             wake,
@@ -194,9 +220,39 @@ impl App {
         match std::env::var("TSDU_VIEW").as_deref() {
             Ok("graph") => self.view = View::Graph,
             Ok("taildrop") => self.view = View::Taildrop,
+            Ok("settings") => self.view = View::Settings,
             _ => {}
         }
         self
+    }
+
+    fn remask(&mut self) {
+        let s = &self.settings;
+        self.mask = Rc::new(Mask::new(s.privacy, s.privacy_names, self.snap.as_ref()));
+    }
+
+    /// Changes a setting, saves it and redraws with it.
+    fn set(&mut self, f: impl FnOnce(&mut Settings)) {
+        f(&mut self.settings);
+        if let Err(e) = self.settings.save() {
+            let e = self.mask.text(&e);
+            self.toast(format!("Could not save settings: {e}"), true);
+        }
+        self.remask();
+    }
+
+    fn toggle_privacy(&mut self) {
+        self.set(|s| s.privacy = !s.privacy);
+        // Toasts are masked when made, so the ones from before go.
+        if self.settings.privacy {
+            self.toasts.clear();
+        }
+        let text = if self.settings.privacy {
+            "Privacy mode is on"
+        } else {
+            "Privacy mode is off"
+        };
+        self.toast(text, false);
     }
 
     fn toast(&mut self, text: impl Into<String>, error: bool) {
@@ -207,9 +263,15 @@ impl App {
         });
     }
 
+    /// Copies the real value; in privacy mode the toast doesn't repeat it.
     fn copy(&mut self, ctx: &egui::Context, text: &str) {
         ctx.copy_text(text.to_owned());
-        self.toast(format!("Copied {text}"), false);
+        let shown = if self.mask.on {
+            "Copied".to_owned()
+        } else {
+            format!("Copied {text}")
+        };
+        self.toast(shown, false);
     }
 
     /// Runs `f` off the UI thread; its message becomes a toast and the state is re-read.
@@ -280,6 +342,7 @@ impl App {
                     self.snap = Some(s);
                     self.error = None;
                     self.rebuild();
+                    self.remask();
                     if first {
                         self.merge_os();
                     }
@@ -302,10 +365,22 @@ impl App {
                 Msg::PingDone(id) => self.pings.entry(id).or_default().running = false,
                 Msg::Done(key, r) => {
                     self.busy.remove(&key);
+                    // tailscaled only re-checks forwarding on its next reconfig,
+                    // so the fixed warning is closed here.
+                    if key == "forwarding" && r.is_ok() {
+                        let health = self.snap.as_ref().map(|s| s.health.clone());
+                        self.dismissed.extend(
+                            health
+                                .unwrap_or_default()
+                                .into_iter()
+                                .filter(|h| ts::is_forwarding_warning(h)),
+                        );
+                    }
                     match r {
-                        Ok(t) if !t.is_empty() => self.toast(t, false),
+                        Ok(t) if !t.is_empty() => self.toast(self.mask.text(&t), false),
                         Ok(_) => {}
-                        Err(e) => self.toast(e, true),
+                        // Errors come from the CLI or the system, in their own words.
+                        Err(e) => self.toast(self.mask.external(&e), true),
                     }
                     self.wake.send(false).ok();
                 }
@@ -414,6 +489,7 @@ impl App {
         self.onboard = None;
         self.connect_attempt += 1;
         if let Err(e) = onboard::mark_done() {
+            let e = self.mask.text(&e);
             self.toast(format!("Could not save that the tour is done: {e}"), true);
         }
     }
@@ -427,7 +503,7 @@ impl App {
         self.merge_os();
         self.os_wake.send(()).ok();
         self.toast(
-            "Disconnected. The credential is gone from the keyring.",
+            "Credential removed from the keyring. OS versions are off.",
             false,
         );
     }
@@ -577,14 +653,134 @@ fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
     Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
 }
 
-fn chip(ui: &mut Ui, text: impl Into<String>, color: Color32) {
+fn chip(ui: &mut Ui, text: impl Into<String>, color: Color32) -> egui::Response {
     Frame::new()
         .fill(color.gamma_multiply(0.14))
         .corner_radius(CornerRadius::same(6))
         .inner_margin(Margin::symmetric(7, 2))
         .show(ui, |ui| {
             ui.label(RichText::new(text.into()).size(11.5).color(color));
-        });
+        })
+        .response
+}
+
+/// One entry in the sidebar's navigation.
+fn nav_item(ui: &mut Ui, sel: bool, glyph: &str, name: &str, badge: &str) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
+    let fill = if sel {
+        CARD_SELECTED
+    } else if resp.hovered() {
+        CARD_HOVER
+    } else {
+        Color32::TRANSPARENT
+    };
+    let p = ui.painter();
+    p.rect_filled(rect, 8.0, fill);
+    let fg = if sel { TEXT } else { MUTED };
+    paint_icon(
+        p,
+        rect.left_center() + vec2(20.0, 0.0),
+        glyph,
+        14.0,
+        if sel { ACCENT } else { fg },
+    );
+    p.text(
+        rect.left_center() + vec2(40.0, 0.0),
+        Align2::LEFT_CENTER,
+        name,
+        FontId::proportional(14.0),
+        fg,
+    );
+    if !badge.is_empty() {
+        p.text(
+            rect.right_center() - vec2(12.0, 0.0),
+            Align2::RIGHT_CENTER,
+            badge,
+            FontId::proportional(12.0),
+            MUTED,
+        );
+    }
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp
+}
+
+/// A filter tab with its count beside it, dimmer than the label.
+fn tab(ui: &mut Ui, sel: bool, label: &str, count: usize) -> egui::Response {
+    let mut job = egui::text::LayoutJob::default();
+    let style = ui.style().clone();
+    RichText::new(label).color(if sel { TEXT } else { MUTED }).append_to(
+        &mut job,
+        &style,
+        egui::FontSelection::Default,
+        Align::Center,
+    );
+    RichText::new(format!("  {count}"))
+        .color(if sel { MUTED } else { FAINT })
+        .append_to(
+        &mut job,
+        &style,
+        egui::FontSelection::Default,
+        Align::Center,
+    );
+    ui.selectable_label(sel, job)
+}
+
+/// The header's one status control: a dot, the state in words, what the
+/// traffic goes through when an exit node is on, and a chevron for its menu.
+fn pill(ui: &mut Ui, dot: Color32, text: &str, sub: &str) -> egui::Response {
+    let p = ui.painter().clone();
+    let g = p.layout_no_wrap(text.to_owned(), FontId::proportional(13.5), TEXT);
+    let s = (!sub.is_empty())
+        .then(|| p.layout_no_wrap(sub.to_owned(), FontId::proportional(12.5), MUTED));
+    let (gw, gh) = (g.size().x, g.size().y);
+    let sw = s.as_ref().map_or(0.0, |s| s.size().x + 8.0);
+    let (rect, resp) = ui.allocate_exact_size(vec2(32.0 + gw + sw + 32.0, 32.0), Sense::click());
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
+    let fill = if open || resp.hovered() { CARD_HOVER } else { CARD };
+    p.rect(
+        rect,
+        16.0,
+        fill,
+        Stroke::new(1.0, BORDER),
+        egui::StrokeKind::Inside,
+    );
+    let c = rect.left_center() + vec2(17.0, 0.0);
+    p.circle_filled(c, 7.0, dot.gamma_multiply(0.22));
+    p.circle_filled(c, 4.0, dot);
+    let x = rect.left() + 32.0;
+    p.galley(egui::pos2(x, rect.center().y - gh / 2.0), g, TEXT);
+    if let Some(s) = s {
+        let sh = s.size().y;
+        p.galley(egui::pos2(x + gw + 8.0, rect.center().y - sh / 2.0), s, MUTED);
+    }
+    paint_icon(
+        &p,
+        rect.right_center() - vec2(17.0, 0.0),
+        icon::CHEVRON_DOWN,
+        10.0,
+        MUTED,
+    );
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp
+}
+
+/// A row in the status menu.
+fn menu_item(ui: &mut Ui, glyph: &str, text: &str) -> bool {
+    let resp = ui.add(egui::Button::new("").min_size(vec2(ui.available_width(), 32.0)));
+    let p = ui.painter();
+    paint_icon(p, resp.rect.left_center() + vec2(14.0, 0.0), glyph, 13.0, MUTED);
+    p.text(
+        resp.rect.left_center() + vec2(32.0, 0.0),
+        Align2::LEFT_CENTER,
+        text,
+        FontId::proportional(13.5),
+        TEXT,
+    );
+    resp.clicked()
 }
 
 /// Monospace text that copies itself on click.
@@ -649,9 +845,9 @@ fn step(ui: &mut Ui, n: &str, text: &str, add: impl FnOnce(&mut Ui)) {
     });
 }
 
-/// This device first, then online before offline, then by name.
-fn display_order(n: &Node) -> (bool, bool, String) {
-    (!n.is_self, !n.online, n.name.to_lowercase())
+/// This device first, then online before offline, then by name as shown.
+fn display_order(n: &Node, mask: &Mask) -> (bool, bool, String) {
+    (!n.is_self, !n.online, mask.order(n))
 }
 
 /// The one surface style for grouped content.
@@ -702,14 +898,6 @@ fn bytes(n: u64) -> String {
     }
 }
 
-/// "relay ams" reads "Relay ams" at the start of a line.
-fn sentence(s: &str) -> String {
-    let mut c = s.chars();
-    c.next()
-        .map(|f| f.to_uppercase().chain(c).collect())
-        .unwrap_or_default()
-}
-
 fn connection(n: &Node) -> (String, Color32) {
     if n.is_self {
         return ("this device".into(), ACCENT);
@@ -737,6 +925,12 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.drain();
         let ctx = ui.ctx().clone();
+
+        let privacy_key =
+            egui::KeyboardShortcut::new(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::P);
+        if ctx.input_mut(|i| i.consume_shortcut(&privacy_key)) {
+            self.toggle_privacy();
+        }
 
         if self.onboard.is_some() {
             // Escape skips the walkthrough, the same as its Skip buttons.
@@ -766,28 +960,31 @@ impl eframe::App for App {
             )
             .show(ui, |ui| self.top_bar(ui));
 
-        if let Some(s) = &self.snap {
-            if !s.health.is_empty() {
-                let health = s.health.clone();
+        let health: Vec<String> = self.snap.as_ref().map_or_else(Vec::new, |s| {
+            s.health
+                .iter()
+                .filter(|h| !self.dismissed.contains(*h))
+                .cloned()
+                .collect()
+        });
+        if let Some(prefs) = self.snap.as_ref().map(|s| s.prefs.clone()) {
+            if !health.is_empty() {
                 egui::Panel::top("health")
                     .frame(
                         Frame::new()
                             .fill(AMBER.gamma_multiply(0.10))
-                            .inner_margin(Margin::symmetric(18, 8)),
+                            .inner_margin(Margin::symmetric(18, 6)),
                     )
                     .show(ui, |ui| {
                         for h in health {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(icon::WARN).color(AMBER));
-                                ui.label(RichText::new(h).color(AMBER).size(12.5));
-                            });
+                            self.health_row(ui, &prefs, &h);
                         }
                     });
             }
         }
 
         egui::Panel::left("side")
-            .exact_size(250.0)
+            .exact_size(210.0)
             .resizable(false)
             .frame(
                 Frame::new()
@@ -797,10 +994,11 @@ impl eframe::App for App {
             )
             .show(ui, |ui| self.sidebar(ui));
 
-        let show_detail = self
-            .selected
-            .as_ref()
-            .is_some_and(|id| self.snap.as_ref().is_some_and(|s| s.node(id).is_some()));
+        let show_detail = self.view != View::Settings
+            && self
+                .selected
+                .as_ref()
+                .is_some_and(|id| self.snap.as_ref().is_some_and(|s| s.node(id).is_some()));
         if show_detail {
             egui::Panel::right("detail")
                 .exact_size(340.0)
@@ -825,6 +1023,11 @@ impl eframe::App for App {
                     }),
             )
             .show(ui, |ui| {
+                // Settings work whatever state tailscaled is in.
+                if self.view == View::Settings {
+                    self.settings_view(ui);
+                    return;
+                }
                 if self.snap.is_none() {
                     self.not_connected(ui);
                     return;
@@ -838,9 +1041,11 @@ impl eframe::App for App {
                     View::Graph => {
                         let (snap, m) =
                             (self.snap.as_ref().unwrap(), self.matrix.as_ref().unwrap());
-                        graph::show(ui, &mut self.graph, snap, m, &mut self.selected);
+                        let mask = self.mask.clone();
+                        graph::show(ui, &mut self.graph, snap, m, &mut self.selected, &mask);
                     }
                     View::Taildrop => self.taildrop(ui),
+                    View::Settings => {}
                 }
             });
 
@@ -864,36 +1069,108 @@ impl App {
             ui.add_space(4.0);
             ui.label(RichText::new("Tailscale Desktop").heading());
             chip(ui, "unofficial", MUTED);
-            // The account and version give way first when the window is narrow.
-            let roomy = ui.available_width() > 720.0;
-            if let Some(s) = self.snap.as_ref().filter(|_| roomy) {
-                ui.add_space(4.0);
-                ui.label(RichText::new(&s.tailnet).color(MUTED));
-                ui.add_space(6.0);
-                chip(ui, format!("v{}", s.version), MUTED);
-            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if icon_button(ui, icon::REFRESH, "Refresh now and re-probe access", true) {
-                    self.wake.send(true).ok();
-                }
-                ui.add_space(10.0);
                 match self.snap.clone() {
-                    Some(s) => {
-                        let on = s.prefs.want_running && s.running();
-                        let label = match s.backend_state.as_str() {
-                            "Running" => "Connected",
-                            "Stopped" => "Off",
-                            "NeedsLogin" => "Logged out",
-                            "Starting" => "Starting",
-                            other => other,
-                        }
-                        .to_owned();
-                        let busy = self.busy.contains("power");
-                        if toggle(ui, on, true)
-                            .on_hover_text("Turn Tailscale on or off")
+                    Some(s) => self.status(ui, &s),
+                    None => {
+                        if primary_button(ui, &format!("{}   Start tailscaled", icon::POWER))
                             .clicked()
-                            && !busy
                         {
+                            self.act(&ctx, "daemon", || {
+                                ts::start_daemon().map(|_| "tailscaled started".into())
+                            });
+                        }
+                    }
+                }
+                ui.add_space(6.0);
+                let on = self.mask.on;
+                let glyph = if on { icon::EYE_SLASH } else { icon::EYE };
+                let b = egui::Button::new(
+                    RichText::new(glyph)
+                        .size(13.0)
+                        .color(if on { ACCENT } else { MUTED }),
+                )
+                .min_size(vec2(32.0, 32.0))
+                .corner_radius(CornerRadius::same(16))
+                .fill(if on { ACCENT.gamma_multiply(0.16) } else { CARD });
+                let tip = if on {
+                    "Privacy mode is on: addresses, accounts and owners are hidden. Ctrl+Shift+P"
+                } else {
+                    "Privacy mode: hide addresses, accounts and owners, for streams and screenshots. Ctrl+Shift+P"
+                };
+                if ui.add(b).on_hover_text(tip).clicked() {
+                    self.toggle_privacy();
+                }
+                if on {
+                    chip(ui, "Privacy on", ACCENT);
+                }
+            });
+        });
+    }
+
+    /// The status pill and the menu behind it: the account, the on/off switch,
+    /// and the things that used to crowd the header and sidebar.
+    fn status(&mut self, ui: &mut Ui, s: &Snapshot) {
+        let ctx = ui.ctx().clone();
+        let on = s.prefs.want_running && s.running();
+        let (label, dot) = match s.backend_state.as_str() {
+            "Running" => ("Connected", GREEN),
+            "Stopped" => ("Off", RING_OFF),
+            "NeedsLogin" => ("Logged out", AMBER),
+            "Starting" => ("Starting", AMBER),
+            other => (other, AMBER),
+        };
+        let via = s
+            .peers
+            .iter()
+            .find(|p| p.stable_id == s.prefs.exit_node_id || p.exit_node_active)
+            .filter(|_| on)
+            .map(|p| format!("via {}", self.mask.name(p)))
+            .unwrap_or_default();
+        let resp = pill(ui, dot, label, &via);
+        let mut popup = egui::Popup::menu(&resp)
+            .align(egui::RectAlign::BOTTOM_END)
+            .gap(6.0)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+        if std::mem::take(&mut self.open_menu) {
+            popup = popup.open_memory(Some(egui::SetOpenCommand::Bool(true)));
+        }
+        popup.show(|ui| {
+            ui.set_width(280.0);
+            Frame::new().inner_margin(Margin::symmetric(10, 6)).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                ui.label(RichText::new("Tailnet").size(11.5).color(MUTED));
+                ui.label(RichText::new(self.mask.who(&s.tailnet)).strong());
+                ui.add_space(2.0);
+                ui.label(
+                    RichText::new(format!(
+                        "Tailscale {}  ·  {}",
+                        s.version,
+                        self.mask.name(&s.me)
+                    ))
+                    .size(11.5)
+                    .color(FAINT),
+                );
+            });
+            ui.separator();
+            Frame::new().inner_margin(Margin::symmetric(10, 2)).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        ui.label("Tailscale");
+                        ui.label(
+                            RichText::new(if on {
+                                "This device is on the tailnet"
+                            } else {
+                                "This device is off the tailnet"
+                            })
+                            .size(11.5)
+                            .color(MUTED),
+                        );
+                    });
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let busy = self.busy.contains("power");
+                        if toggle(ui, on, true).clicked() && !busy {
                             self.act(&ctx, "power", move || {
                                 ts::set_running(!on).map(|_| {
                                     if on {
@@ -907,287 +1184,130 @@ impl App {
                         if busy {
                             ui.add(egui::Spinner::new());
                         }
-                        ui.label(RichText::new(label).strong().color(if on {
-                            GREEN
-                        } else {
-                            MUTED
-                        }));
-                    }
-                    None => {
-                        if primary_button(ui, &format!("{}   Start tailscaled", icon::POWER))
-                            .clicked()
-                        {
-                            self.act(&ctx, "daemon", || {
-                                ts::start_daemon().map(|_| "tailscaled started".into())
-                            });
-                        }
+                    });
+                });
+            });
+            ui.separator();
+            if menu_item(ui, icon::REFRESH, "Check access again") {
+                self.wake.send(true).ok();
+                self.toast("Checking who can reach whom", false);
+                ui.close();
+            }
+            if menu_item(ui, icon::GEAR, "Settings") {
+                self.view = View::Settings;
+                ui.close();
+            }
+            if menu_item(ui, icon::HELP, "Welcome tour") {
+                self.onboard = Some(Onboarding::at(0));
+                ui.close();
+            }
+        });
+    }
+
+    /// One health warning from tailscaled, with a way to fix it when there is one.
+    /// The buttons are placed first and the text wraps in what is left.
+    fn health_row(&mut self, ui: &mut Ui, prefs: &ts::Prefs, h: &str) {
+        let ctx = ui.ctx().clone();
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let close = egui::Button::new(RichText::new(icon::CLOSE).size(12.0).color(AMBER))
+                .frame(false)
+                .min_size(vec2(26.0, 26.0));
+            if ui.add(close).on_hover_text("Hide this warning").clicked() {
+                self.dismissed.insert(h.to_owned());
+            }
+            if ts::is_forwarding_warning(h) {
+                ui.add_space(4.0);
+                let more = egui::Button::new(
+                    RichText::new(format!("How to fix  {}", icon::EXTERNAL))
+                        .size(12.5)
+                        .color(AMBER),
+                )
+                .frame(false);
+                if ui
+                    .add(more)
+                    .on_hover_text("Tailscale's guide to IP forwarding")
+                    .clicked()
+                {
+                    ctx.open_url(egui::OpenUrl::new_tab(ts::FORWARDING_URL));
+                }
+                if prefs.advertises_exit() {
+                    let prefs = prefs.clone();
+                    if ui
+                        .button(RichText::new("Stop offering exit node").size(12.5))
+                        .on_hover_text("Other devices can no longer send their traffic through this one")
+                        .clicked()
+                    {
+                        self.act(&ctx, "adv", move || {
+                            ts::set_advertise_exit(&prefs, false)
+                                .map(|_| "No longer offered as an exit node".into())
+                        });
                     }
                 }
+                let busy = self.busy.contains("forwarding");
+                let fix = egui::Button::new(
+                    RichText::new("Turn on IP forwarding")
+                        .size(12.5)
+                        .color(Color32::BLACK)
+                        .strong(),
+                )
+                .fill(AMBER)
+                .stroke(Stroke::NONE);
+                if ui
+                    .add_enabled(!busy, fix)
+                    .on_hover_text("Asks for your password, then turns forwarding on now and after every reboot")
+                    .clicked()
+                {
+                    let prefs = prefs.clone();
+                    self.act(&ctx, "forwarding", move || {
+                        ts::enable_ip_forwarding(&prefs).map(|_| "IP forwarding is on".into())
+                    });
+                }
+                if busy {
+                    ui.add(egui::Spinner::new());
+                }
+            }
+            ui.add_space(8.0);
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.label(RichText::new(icon::WARN).color(AMBER));
+                ui.add(
+                    egui::Label::new(RichText::new(self.mask.external(h)).color(AMBER).size(12.5))
+                        .wrap(),
+                );
             });
         });
     }
 
     fn sidebar(&mut self, ui: &mut Ui) {
-        let ctx = ui.ctx().clone();
-        let online = self
-            .snap
-            .as_ref()
-            .map(|s| s.peers.iter().filter(|p| p.online).count())
-            .unwrap_or(0);
-        let total = self.snap.as_ref().map(|s| s.peers.len()).unwrap_or(0);
-        let waiting = self
-            .snap
-            .as_ref()
-            .map(|s| s.waiting_files.len())
-            .unwrap_or(0);
+        let (online, total, waiting) = self.snap.as_ref().map_or((0, 0, 0), |s| {
+            (
+                s.all().filter(|n| n.online || n.is_self).count(),
+                s.all().count(),
+                s.waiting_files.len(),
+            )
+        });
+        let devices = if total > 0 {
+            format!("{online}/{total}")
+        } else {
+            String::new()
+        };
+        let files = if waiting > 0 {
+            waiting.to_string()
+        } else {
+            String::new()
+        };
         for (v, glyph, name, badge) in [
-            (
-                View::Devices,
-                icon::LIST,
-                "Devices",
-                format!("{online}/{total}"),
-            ),
+            (View::Devices, icon::LIST, "Devices", devices),
             (View::Graph, icon::GRAPH, "Access graph", String::new()),
-            (
-                View::Taildrop,
-                icon::INBOX,
-                "Taildrop",
-                if waiting > 0 {
-                    waiting.to_string()
-                } else {
-                    String::new()
-                },
-            ),
+            (View::Taildrop, icon::INBOX, "Taildrop", files),
         ] {
-            let sel = self.view == v;
-            let (rect, resp) =
-                ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
-            let fill = if sel {
-                CARD_SELECTED
-            } else if resp.hovered() {
-                CARD_HOVER
-            } else {
-                Color32::TRANSPARENT
-            };
-            ui.painter().rect_filled(rect, 8.0, fill);
-            let fg = if sel { TEXT } else { MUTED };
-            ui.painter().text(
-                rect.left_center() + vec2(14.0, 0.0),
-                Align2::LEFT_CENTER,
-                glyph,
-                FontId::proportional(14.0),
-                if sel { ACCENT } else { fg },
-            );
-            ui.painter().text(
-                rect.left_center() + vec2(40.0, 0.0),
-                Align2::LEFT_CENTER,
-                name,
-                FontId::proportional(14.0),
-                fg,
-            );
-            if !badge.is_empty() {
-                ui.painter().text(
-                    rect.right_center() - vec2(12.0, 0.0),
-                    Align2::RIGHT_CENTER,
-                    badge,
-                    FontId::proportional(12.0),
-                    MUTED,
-                );
-            }
-            if resp.clicked() {
+            if nav_item(ui, self.view == v, glyph, name, &badge).clicked() {
                 self.view = v;
             }
-            if resp.hovered() {
-                ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
         }
-
-        let Some(s) = self.snap.clone() else { return };
-        ui.add_space(18.0);
-        section_title(ui, "Routing");
-        ui.add_space(4.0);
-
-        // Exit node picker.
-        let exits: Vec<&Node> = s.peers.iter().filter(|p| p.exit_node_option).collect();
-        let current = s
-            .peers
-            .iter()
-            .find(|p| p.stable_id == s.prefs.exit_node_id || p.exit_node_active);
-        ui.label(RichText::new(format!("{}   Exit node", icon::GLOBE)).color(TEXT));
-        let mut choice: Option<Option<String>> = None;
-        egui::ComboBox::from_id_salt("exit")
-            .width(ui.available_width())
-            .selected_text(
-                current
-                    .map(|c| c.name.clone())
-                    .unwrap_or_else(|| "None".into()),
-            )
-            .show_ui(ui, |ui| {
-                if ui.selectable_label(current.is_none(), "None").clicked() {
-                    choice = Some(None);
-                }
-                for e in &exits {
-                    let label = if e.online {
-                        e.name.clone()
-                    } else {
-                        format!("{} (offline)", e.name)
-                    };
-                    if ui
-                        .selectable_label(
-                            current.is_some_and(|c| c.stable_id == e.stable_id),
-                            label,
-                        )
-                        .clicked()
-                    {
-                        choice = Some(Some(e.stable_id.clone()));
-                    }
-                }
-                if exits.is_empty() {
-                    ui.label(RichText::new("No device offers an exit node").color(MUTED));
-                }
-            });
-        if let Some(c) = choice {
-            self.act(&ctx, "exit", move || {
-                ts::set_exit_node(c.as_deref()).map(|_| {
-                    if c.is_some() {
-                        "Exit node set".into()
-                    } else {
-                        "Exit node off".into()
-                    }
-                })
-            });
-        }
-
-        let pref_row = |ui: &mut Ui, label: &str, hint: &str, on: bool| -> bool {
-            let mut clicked = false;
-            ui.horizontal(|ui| {
-                ui.label(label).on_hover_text(hint);
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    clicked = toggle(ui, on, false).on_hover_text(hint).clicked();
-                });
-            });
-            clicked
-        };
-        ui.add_space(6.0);
-        if current.is_some()
-            && pref_row(
-                ui,
-                "Allow LAN access",
-                "Keep reaching your local network while using the exit node",
-                s.prefs.exit_node_allow_lan_access,
-            )
-        {
-            let v = !s.prefs.exit_node_allow_lan_access;
-            self.act(&ctx, "lan", move || {
-                ts::patch_prefs(
-                    json!({"ExitNodeAllowLANAccess": v, "ExitNodeAllowLANAccessSet": true}),
-                )
-                .map(|_| String::new())
-            });
-        }
-        if pref_row(
-            ui,
-            "Use subnet routes",
-            "Accept routes that other devices advertise",
-            s.prefs.route_all,
-        ) {
-            let v = !s.prefs.route_all;
-            self.act(&ctx, "routes", move || {
-                ts::patch_prefs(json!({"RouteAll": v, "RouteAllSet": true})).map(|_| String::new())
-            });
-        }
-        if pref_row(
-            ui,
-            "Offer as exit node",
-            "Let other devices route their internet through this one",
-            s.prefs.advertises_exit(),
-        ) {
-            let (prefs, v) = (s.prefs.clone(), !s.prefs.advertises_exit());
-            self.act(&ctx, "adv", move || {
-                ts::set_advertise_exit(&prefs, v).map(|_| String::new())
-            });
-        }
-        if pref_row(
-            ui,
-            "Shields up",
-            "Block every incoming connection to this device",
-            s.prefs.shields_up,
-        ) {
-            let v = !s.prefs.shields_up;
-            self.act(&ctx, "shields", move || {
-                ts::patch_prefs(json!({"ShieldsUp": v, "ShieldsUpSet": true}))
-                    .map(|_| String::new())
-            });
-        }
-
-        ui.add_space(14.0);
-        section_title(ui, "OS versions");
-        ui.add_space(4.0);
-        if self.api.connected {
-            ui.horizontal(|ui| {
-                let (text, col) = match &self.api.error {
-                    None => ("On for every device", GREEN),
-                    Some(_) => ("Could not refresh", AMBER),
-                };
-                ui.label(RichText::new(text).size(12.5).color(col));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui
-                        .small_button("Disconnect")
-                        .on_hover_text("Remove the API credential from the keyring")
-                        .clicked()
-                    {
-                        self.disconnect();
-                    }
-                });
-            });
-            if let Some(e) = &self.api.error {
-                ui.label(RichText::new(e).size(11.5).color(FAINT));
-            }
-        } else {
-            ui.label(
-                RichText::new("Only this device's is known until you connect the Tailscale API.")
-                    .size(11.5)
-                    .color(FAINT),
-            );
-            ui.add_space(4.0);
-            if ui.button("Set up OS versions").clicked() {
-                self.onboard = Some(Onboarding::at(onboard::OS_STEP));
-            }
-        }
-
         ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
-            let me = s.me.clone();
-            if ui
-                .link(RichText::new("Welcome tour").size(11.5).color(MUTED))
-                .clicked()
-            {
-                self.onboard = Some(Onboarding::at(0));
+            if nav_item(ui, self.view == View::Settings, icon::GEAR, "Settings", "").clicked() {
+                self.view = View::Settings;
             }
-            ui.add_space(2.0);
-            ui.label(
-                RichText::new(format!(
-                    "tailscaled {}  ·  operator {}",
-                    s.version,
-                    if s.prefs.operator_user.is_empty() {
-                        "root"
-                    } else {
-                        &s.prefs.operator_user
-                    }
-                ))
-                .size(11.0)
-                .color(FAINT),
-            );
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                if !me.ipv4().is_empty() && copy_label(ui, me.ipv4(), 12.5) {
-                    self.copy(&ctx, me.ipv4());
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(os_icon(&me.os)).color(ACCENT));
-                ui.label(RichText::new(&me.name).strong());
-            });
-            section_title(ui, "This device");
         });
     }
 
@@ -1199,7 +1319,7 @@ impl App {
             ui.add_space(8.0);
             ui.label(RichText::new("Can't reach tailscaled").heading());
             if let Some(e) = &self.error {
-                ui.label(RichText::new(e).color(MUTED));
+                ui.label(RichText::new(self.mask.external(e)).color(MUTED));
             }
             ui.add_space(12.0);
             if primary_button(ui, "Start tailscaled (asks for sudo)").clicked() {
@@ -1247,8 +1367,8 @@ impl App {
         ui.horizontal(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.search)
-                    .hint_text(format!("{}   Search name, IP, tag, user", icon::SEARCH))
-                    .desired_width(280.0)
+                    .hint_text(format!("{}   Search, or tag:  os:  user:", icon::SEARCH))
+                    .desired_width(300.0)
                     .margin(Margin::symmetric(10, 7)),
             );
             ui.add_space(8.0);
@@ -1257,74 +1377,97 @@ impl App {
                 (Filter::Online, "Online"),
                 (Filter::Tagged, "Tagged"),
             ] {
-                if ui.selectable_label(self.filter == f, label).clicked() {
+                let count = s.all().filter(|n| f.admits(n)).count();
+                if tab(ui, self.filter == f, label, count).clicked() {
                     self.filter = f;
                 }
             }
         });
-        ui.add_space(12.0);
+        ui.add_space(14.0);
 
-        let q = self.search.to_lowercase();
-        let matches = |n: &Node| {
-            let f = match self.filter {
-                Filter::All => true,
-                Filter::Online => n.online,
-                Filter::Tagged => !n.tags.is_empty(),
-            };
-            f && (q.is_empty()
-                || n.name.to_lowercase().contains(&q)
-                || n.hostname.to_lowercase().contains(&q)
-                || n.ips.iter().any(|i| i.contains(&q))
-                || n.tags.iter().any(|t| t.contains(&q))
-                || n.user_login.to_lowercase().contains(&q)
-                || n.os.to_lowercase().contains(&q))
-        };
-        let mut nodes: Vec<&Node> = s.all().filter(|n| matches(n)).collect();
-        nodes.sort_by_key(|n| display_order(n));
-        let (on, off): (Vec<&Node>, Vec<&Node>) = nodes.into_iter().partition(|n| n.online);
+        let mut nodes: Vec<&Node> = s
+            .all()
+            .filter(|n| self.filter.admits(n) && self.matches(n, &self.search))
+            .collect();
+        // This device, then online, then offline; offline rows dim themselves.
+        nodes.sort_by_key(|n| display_order(n, &self.mask));
 
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                for (title, list) in [("Online", on), ("Offline", off)] {
-                    if list.is_empty() {
-                        continue;
-                    }
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(title).size(14.0).strong().color(TEXT));
+                if nodes.is_empty() {
+                    ui.add_space(40.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(RichText::new("No device matches").color(MUTED));
                         ui.label(
-                            RichText::new(list.len().to_string())
-                                .size(13.0)
+                            RichText::new("Try a name, an IP, tag:server, os:android or user:alice.")
+                                .size(12.5)
                                 .color(FAINT),
                         );
                     });
-                    ui.add_space(6.0);
-                    // One panel per group; rows are divided, not boxed one by one.
-                    card_frame(4).show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = 0.0;
-                        let last = list.len() - 1;
-                        for (i, n) in list.into_iter().enumerate() {
-                            self.device_row(ui, &ctx, &s, n);
-                            if i != last {
-                                let r = ui.available_rect_before_wrap();
-                                ui.painter().hline(
-                                    r.left() + 64.0..=r.right() - 12.0,
-                                    r.top(),
-                                    Stroke::new(1.0, BORDER),
-                                );
-                            }
-                        }
-                    });
-                    ui.add_space(18.0);
+                    return;
                 }
+                card_frame(4).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    let last = nodes.len() - 1;
+                    for (i, n) in nodes.into_iter().enumerate() {
+                        self.device_row(ui, &ctx, &s, n);
+                        if i != last {
+                            let r = ui.available_rect_before_wrap();
+                            ui.painter().hline(
+                                r.left() + 64.0..=r.right() - 12.0,
+                                r.top(),
+                                Stroke::new(1.0, BORDER),
+                            );
+                        }
+                    }
+                });
+                ui.add_space(18.0);
             });
     }
 
+    /// Every word must match. `tag:`, `os:`, `user:` and `is:` look in one
+    /// place; a bare word looks everywhere.
+    fn matches(&self, n: &Node, query: &str) -> bool {
+        let os = self.os_of(n);
+        let has = |hay: &str, v: &str| hay.to_lowercase().contains(v);
+        query.split_whitespace().all(|word| {
+            let w = word.to_lowercase();
+            if let Some(v) = w.strip_prefix("tag:") {
+                n.tags.iter().any(|t| has(t.trim_start_matches("tag:"), v))
+            } else if let Some(v) = w.strip_prefix("os:") {
+                has(&os.title(), v) || has(&n.os, v)
+            } else if let Some(v) = w.strip_prefix("user:") {
+                has(&n.user_login, v) || has(&n.user_display, v)
+            } else if let Some(v) = w.strip_prefix("is:") {
+                match v {
+                    "online" => Filter::Online.admits(n),
+                    "offline" => !Filter::Online.admits(n),
+                    "tagged" => Filter::Tagged.admits(n),
+                    "exit" => n.exit_node_option,
+                    _ => false,
+                }
+            } else {
+                has(&n.name, &w)
+                    || has(&n.hostname, &w)
+                    || has(&self.mask.name(n), &w)
+                    || n.ips.iter().any(|i| i.contains(&w))
+                    || n.tags.iter().any(|t| has(t, &w))
+                    || has(&n.user_login, &w)
+                    || has(&os.title(), &w)
+                    || has(&n.os, &w)
+            }
+        })
+    }
+
     fn device_row(&mut self, ui: &mut Ui, ctx: &egui::Context, s: &Snapshot, n: &Node) {
-        let h = 64.0;
+        let mask = self.mask.clone();
+        let h = 60.0;
         let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
         let selected = self.selected.as_deref() == Some(&n.stable_id);
-        if selected || resp.hovered() {
+        // The pointer may be over a button inside the row; it still counts.
+        let hover = ui.rect_contains_pointer(rect);
+        if selected || hover {
             let fill = if selected { CARD_SELECTED } else { CARD_HOVER };
             ui.painter().rect_filled(rect, 9.0, fill);
         }
@@ -1334,6 +1477,9 @@ impl App {
             } else {
                 Some(n.stable_id.clone())
             };
+        }
+        if resp.hovered() {
+            ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
         }
 
         let inner = rect.shrink2(vec2(14.0, 6.0));
@@ -1347,13 +1493,16 @@ impl App {
             1.0,
         );
 
-        // Fixed columns so every row lines up.
-        // Columns drop out from the right as the list gets narrow.
+        // Fixed columns so every row lines up; the IP gives way first when the
+        // list gets narrow.
         let avail = inner.width() - 50.0;
-        let note_w = if avail >= 760.0 { 150.0 } else { 0.0 };
-        let act_w = if avail >= 640.0 { 120.0 } else { 74.0 };
-        let (ip_w, conn_w) = (150.0, 130.0);
-        let name_w = (avail - ip_w - conn_w - note_w - act_w).clamp(150.0, 460.0);
+        let act_w = 96.0;
+        let ip_w = if self.settings.show_ips && avail >= 460.0 {
+            150.0
+        } else {
+            0.0
+        };
+        let name_w = (avail - ip_w - act_w).clamp(150.0, 420.0);
         let mut x = inner.left() + 50.0;
         let mut col = |w: f32| {
             let r = egui::Rect::from_min_max(
@@ -1363,7 +1512,7 @@ impl App {
             x += w;
             r
         };
-        let (name_r, ip_r, conn_r, note_r) = (col(name_w), col(ip_w), col(conn_w), col(note_w));
+        let (name_r, ip_r) = (col(name_w), col(ip_w));
         let act_r = egui::Rect::from_min_max(egui::pos2(x, inner.top()), inner.max);
         let ui = &mut ui.new_child(UiBuilder::new().max_rect(rect));
         let centered = |r: egui::Rect| {
@@ -1377,13 +1526,70 @@ impl App {
                 .layout(Layout::left_to_right(Align::Center))
         };
 
+        // Access only speaks up when something is blocked; open both ways is normal.
+        let blocked = (!n.is_self)
+            .then_some(self.matrix.as_ref())
+            .flatten()
+            .and_then(|m| {
+                let me = &s.me.stable_id;
+                let (out, inn) = (m.get(me, &n.stable_id), m.get(&n.stable_id, me));
+                match (out.allowed(), inn.allowed()) {
+                    (Some(false), Some(false)) => Some(("No access", RED, out)),
+                    (Some(false), _) => Some(("You can't reach it", RED, out)),
+                    (_, Some(false)) => Some(("Can't reach you", AMBER, inn)),
+                    _ => None,
+                }
+            });
+
+        // Status only when there is something to say: a relay, a ping result,
+        // or when an offline device was last around. Direct is the normal case.
+        let last_ping = self
+            .pings
+            .get(&n.stable_id)
+            .and_then(|p| p.results.iter().rev().find_map(|r| r.as_ref().ok()));
+        let relayed = n.cur_addr.is_empty() && n.active && !n.relay.is_empty();
+        let status = if n.is_self {
+            None
+        } else if !n.online {
+            Some((
+                format!("Seen {}", ago(n.last_seen)),
+                FAINT,
+                format!("Last seen {}", local_time(n.last_seen)),
+            ))
+        } else if relayed {
+            Some((
+                format!("Relay {}", n.relay),
+                AMBER,
+                "No direct path right now; traffic goes through a relay".to_owned(),
+            ))
+        } else if let Some(p) = last_ping {
+            let (path, col) = if p.direct {
+                ("", GREEN)
+            } else {
+                (" relayed", AMBER)
+            };
+            Some((
+                format!("{:.0} ms{path}", p.latency_ms),
+                col,
+                "Last ping".to_owned(),
+            ))
+        } else {
+            None
+        };
+
         ui.scope_builder(centered(name_r), |ui| {
+            ui.set_clip_rect(name_r.intersect(ui.clip_rect()));
             // Rows hug their text so the two lines center as one block.
             ui.spacing_mut().interact_size.y = 0.0;
             ui.spacing_mut().item_spacing.y = 3.0;
             ui.horizontal(|ui| {
-                let name = RichText::new(&n.name).strong().size(14.5);
+                let name = RichText::new(mask.name(n)).strong().size(14.5);
                 ui.label(if dim { name.color(MUTED) } else { name });
+                // Blocked access comes first, so it is the last chip to be cut off.
+                if let Some((text, color, a)) = &blocked {
+                    let (_, _, how) = access_text(a);
+                    chip(ui, format!("{}  {text}", icon::BAN), *color).on_hover_text(how);
+                }
                 if n.is_self {
                     chip(ui, "you", ACCENT);
                 }
@@ -1393,103 +1599,83 @@ impl App {
                     chip(ui, "exit node", MUTED);
                 }
                 for t in &n.tags {
-                    chip(ui, format!("{} {t}", icon::TAG), PURPLE);
+                    chip(ui, format!("{}  {t}", icon::TAG), PURPLE);
                 }
             });
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
+                ui.spacing_mut().item_spacing.x = 6.0;
                 let os = self.os_of(n);
-                ui.label(RichText::new(os.title()).size(12.5).color(MUTED));
-                if let Some(d) = os.detail() {
-                    ui.label(RichText::new(d).size(12.5).color(FAINT));
+                let title = ui.label(RichText::new(os.title()).size(12.5).color(MUTED));
+                let dot = |ui: &mut Ui| {
+                    ui.label(RichText::new("·").size(12.5).color(FAINT));
+                };
+                match os.detail() {
+                    Some(d) if self.settings.show_kernel => {
+                        dot(ui);
+                        ui.label(RichText::new(d).size(12.5).color(FAINT));
+                    }
+                    Some(_) => {
+                        if let Some((k, v)) = os.detail_row() {
+                            title.on_hover_text(format!("{k} {v}"));
+                        }
+                    }
+                    None => {}
                 }
                 // The owner only earns room when it is someone else.
                 if n.tags.is_empty() && n.user_login != s.me.user_login {
-                    ui.label(RichText::new(&n.user_login).size(12.5).color(FAINT));
+                    dot(ui);
+                    ui.label(
+                        RichText::new(mask.who(&n.user_login))
+                            .size(12.5)
+                            .color(FAINT),
+                    );
+                }
+                if let Some((text, col, tip)) = &status {
+                    dot(ui);
+                    ui.label(RichText::new(text).size(12.5).color(*col))
+                        .on_hover_text(tip);
                 }
             });
         });
 
-        ui.scope_builder(in_row(ip_r), |ui| {
-            let ip = n.ipv4().to_owned();
-            if copy_label(ui, &ip, 13.0) {
-                self.copy(ctx, &ip);
-            }
-        });
-
-        // Status in words: how it is connected, or when it was last around.
-        ui.scope_builder(in_row(conn_r), |ui| {
-            let (text, col) = if n.online || n.is_self {
-                let (c, col) = connection(n);
-                (sentence(&c), col)
-            } else {
-                (format!("Seen {}", ago(n.last_seen)), FAINT)
-            };
-            ui.label(RichText::new(text).size(13.0).color(col))
-                .on_hover_text(local_time(n.last_seen));
-        });
-
-        // Access only speaks up when something is blocked; open both ways is normal.
-        if !n.is_self
-            && note_w > 0.0
-            && let Some(m) = &self.matrix
-        {
-            let me = &s.me.stable_id;
-            let (out, inn) = (m.get(me, &n.stable_id), m.get(&n.stable_id, me));
-            let note = match (out.allowed(), inn.allowed()) {
-                (Some(false), Some(false)) => Some(("No access", RED, &out)),
-                (Some(false), _) => Some(("You can't reach it", RED, &out)),
-                (_, Some(false)) => Some(("Can't reach you", MUTED, &inn)),
-                (None, _) => Some(("Not checked yet", FAINT, &out)),
-                (_, None) => Some(("Not checked yet", FAINT, &inn)),
-                _ => None,
-            };
-            if let Some((text, col, a)) = note {
-                ui.scope_builder(in_row(note_r), |ui| {
-                    ui.spacing_mut().item_spacing.x = 5.0;
-                    let (glyph, _, how) = access_text(a);
-                    // Blocked shows the ban sign; not known yet keeps the question mark.
-                    let glyph = if glyph == "?" { glyph } else { icon::BAN };
-                    ui.label(RichText::new(glyph).size(12.0).color(col));
-                    ui.label(RichText::new(text).size(12.5).color(col))
-                        .on_hover_text(how);
-                });
-            }
+        if ip_w > 0.0 {
+            ui.scope_builder(in_row(ip_r), |ui| {
+                let ip = n.ipv4().to_owned();
+                if copy_label(ui, &mask.ip(&ip), 13.0) {
+                    self.copy(ctx, &ip);
+                }
+            });
         }
 
+        // Actions appear with the pointer, and only for devices that can use them.
         ui.scope_builder(
             UiBuilder::new()
                 .max_rect(act_r)
                 .layout(Layout::right_to_left(Align::Center)),
             |ui| {
-                if !n.is_self {
-                    if icon_button(ui, icon::SEND, n.taildrop_reason(), n.taildrop_ok()) {
-                        self.pick_and_send(ctx, n);
-                    }
-                    let running = self.pings.get(&n.stable_id).is_some_and(|p| p.running);
-                    if icon_button(ui, icon::BOLT, "Ping 5 times", n.online && !running) {
-                        self.selected = Some(n.stable_id.clone());
-                        self.ping(ctx, n);
-                    }
-                    let last = self
-                        .pings
-                        .get(&n.stable_id)
-                        .and_then(|p| p.results.iter().rev().find_map(|r| r.as_ref().ok()));
-                    if let Some(last) = last.filter(|_| act_w > 100.0) {
-                        ui.label(
-                            RichText::new(format!("{:.0} ms", last.latency_ms))
-                                .monospace()
-                                .size(12.0)
-                                .color(if last.direct { GREEN } else { AMBER }),
-                        );
-                    }
+                let shown = hover || selected;
+                let (r, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+                if shown {
+                    paint_icon(ui.painter(), r.center(), icon::CHEVRON_RIGHT, 11.0, FAINT);
+                }
+                if !shown || n.is_self || !n.online {
+                    return;
+                }
+                ui.add_space(4.0);
+                if icon_button(ui, icon::SEND, n.taildrop_reason(), n.taildrop_ok()) {
+                    self.pick_and_send(ctx, n);
+                }
+                let running = self.pings.get(&n.stable_id).is_some_and(|p| p.running);
+                if icon_button(ui, icon::BOLT, "Ping 5 times", !running) {
+                    self.selected = Some(n.stable_id.clone());
+                    self.ping(ctx, n);
                 }
             },
         );
     }
 
     fn pick_and_send(&mut self, ctx: &egui::Context, n: &Node) {
-        let (ip, name) = (n.ipv4().to_owned(), n.name.clone());
+        let (ip, name) = (n.ipv4().to_owned(), self.mask.name(n));
         self.act(ctx, &format!("send-{}", n.stable_id), move || {
             let Some(files) = rfd::FileDialog::new()
                 .set_title(format!("Send to {name}"))
@@ -1513,19 +1699,21 @@ impl App {
         if dropped.is_empty() {
             return;
         }
+        // Settings hides the selection, so a drop there has no target.
         let target = self
             .selected
             .as_ref()
+            .filter(|_| self.view != View::Settings)
             .and_then(|id| self.snap.as_ref()?.node(id).cloned());
         match target {
             Some(n) if n.taildrop_ok() => {
-                let (ip, name) = (n.ipv4().to_owned(), n.name.clone());
+                let (ip, name) = (n.ipv4().to_owned(), self.mask.name(&n));
                 self.act(ctx, &format!("send-{}", n.stable_id), move || {
                     send_all(&dropped, &ip, &name)
                 });
             }
             Some(n) => self.toast(
-                format!("Can't send to {}: {}", n.name, n.taildrop_reason()),
+                format!("Can't send to {}: {}", self.mask.name(&n), n.taildrop_reason()),
                 true,
             ),
             None => self.toast("Select a device first, then drop files to send them", true),
@@ -1538,11 +1726,12 @@ impl App {
         let Some(n) = self.selected.as_ref().and_then(|id| s.node(id)).cloned() else {
             return;
         };
+        let mask = self.mask.clone();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(os_icon(&n.os)).size(22.0).color(if n.online { TEXT } else { MUTED }));
                 ui.add_space(4.0);
-                ui.label(RichText::new(&n.name).heading());
+                ui.label(RichText::new(mask.name(&n)).heading());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if icon_button(ui, icon::CLOSE, "Close", true) {
                         self.selected = None;
@@ -1555,24 +1744,40 @@ impl App {
                     chip(ui, format!("last seen {}", ago(n.last_seen)), MUTED);
                 }
                 for t in &n.tags {
-                    chip(ui, format!("{} {t}", icon::TAG), PURPLE);
+                    chip(ui, format!("{}  {t}", icon::TAG), PURPLE);
                 }
                 if n.tags.is_empty() && !n.user_login.is_empty() {
-                    chip(ui, format!("{} {}", icon::USER, n.user_login), MUTED);
+                    chip(ui, format!("{}  {}", icon::USER, mask.who(&n.user_login)), MUTED);
                 }
             });
             ui.add_space(12.0);
 
+            if n.is_self {
+                card(ui, |ui| {
+                    section_title(ui, "This device");
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("Exit node, subnet routes and shields for this device are in Settings.").size(12.5).color(MUTED));
+                    ui.add_space(6.0);
+                    if ui.button(format!("{}   Open Settings", icon::GEAR)).clicked() {
+                        self.view = View::Settings;
+                        self.selected = None;
+                    }
+                });
+                ui.add_space(10.0);
+            }
+
             card(ui, |ui| {
                 section_title(ui, "Addresses");
                 ui.add_space(4.0);
-                let mut addrs: Vec<String> = n.ips.clone();
+                // Shown masked in privacy mode; a click still copies the real one.
+                let mut addrs: Vec<(String, String)> =
+                    n.ips.iter().map(|ip| (mask.ip(ip), ip.clone())).collect();
                 if !n.dns_name.is_empty() {
-                    addrs.push(n.dns_name.clone());
+                    addrs.push((mask.dns(&n), n.dns_name.clone()));
                 }
-                for a in addrs {
-                    if copy_label(ui, &a, if a.len() > 26 { 11.5 } else { 13.0 }) {
-                        self.copy(&ctx, &a);
+                for (shown, real) in addrs {
+                    if copy_label(ui, &shown, if shown.len() > 26 { 11.5 } else { 13.0 }) {
+                        self.copy(&ctx, &real);
                     }
                 }
             });
@@ -1598,11 +1803,13 @@ impl App {
                                     Ok(p) => {
                                         ui.horizontal(|ui| {
                                             ui.label(RichText::new(format!("{:>6.1} ms", p.latency_ms)).monospace().color(if p.direct { GREEN } else { AMBER }));
-                                            ui.label(RichText::new(format!("via {}", p.via)).size(12.0).color(MUTED));
+                                            // A direct path names the public endpoint; hide it whole.
+                                            let via = if p.direct && mask.on { "a direct path".to_owned() } else { mask.external(&p.via) };
+                                            ui.label(RichText::new(format!("via {via}")).size(12.0).color(MUTED));
                                         });
                                     }
                                     Err(e) => {
-                                        ui.label(RichText::new(e).size(12.0).color(RED));
+                                        ui.label(RichText::new(mask.external(e)).size(12.0).color(RED));
                                     }
                                 }
                             }
@@ -1691,11 +1898,11 @@ impl App {
                     rows.push(("Update", "a newer Tailscale is available".into(), AMBER));
                 }
                 rows.extend([
-                    ("Hostname", n.hostname.clone(), TEXT),
-                    ("Owner", if n.tags.is_empty() { n.user_display.clone() } else { "tagged device".into() }, TEXT),
+                    ("Hostname", mask.hostname(&n), TEXT),
+                    ("Owner", if n.tags.is_empty() { mask.who(&n.user_display) } else { "tagged device".into() }, TEXT),
                 ]);
                 if !n.cur_addr.is_empty() {
-                    rows.push(("Endpoint", n.cur_addr.clone(), TEXT));
+                    rows.push(("Endpoint", mask.secret(&n.cur_addr), TEXT));
                 }
                 if !n.relay.is_empty() {
                     rows.push(("Home relay", n.relay.clone(), TEXT));
@@ -1704,7 +1911,7 @@ impl App {
                     rows.push(("Sent / received", format!("{} / {}", bytes(n.tx), bytes(n.rx)), TEXT));
                 }
                 if !n.primary_routes.is_empty() {
-                    rows.push(("Subnet routes", n.primary_routes.join(", "), TEXT));
+                    rows.push(("Subnet routes", mask.text(&n.primary_routes.join(", ")), TEXT));
                 }
                 rows.push(("Added", local_time(n.created), TEXT));
                 rows.push(("Key expires", local_time(n.key_expiry), TEXT));
@@ -1769,12 +1976,12 @@ impl App {
             section_title(ui, "Send to");
             ui.add_space(6.0);
             let mut peers: Vec<&Node> = s.peers.iter().collect();
-            peers.sort_by_key(|p| (!p.taildrop_ok(), p.name.to_lowercase()));
+            peers.sort_by_key(|p| (!p.taildrop_ok(), self.mask.order(p)));
             for p in peers {
                 card(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(os_icon(&p.os)).size(16.0));
-                        ui.label(RichText::new(&p.name).strong());
+                        ui.label(RichText::new(self.mask.name(p)).strong());
                         ui.label(RichText::new(p.taildrop_reason()).size(12.0).color(if p.taildrop_ok() { GREEN } else { MUTED }));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             let busy = self.busy.contains(&format!("send-{}", p.stable_id));

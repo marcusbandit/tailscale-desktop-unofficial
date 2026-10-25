@@ -147,6 +147,7 @@ pub fn show(
     snap: &Snapshot,
     m: &Matrix,
     selected: &mut Option<String>,
+    mask: &crate::privacy::Mask,
 ) {
     if st.cam.zoom == 0.0 {
         st.cam.zoom = 1.0;
@@ -169,7 +170,7 @@ pub fn show(
             } else {
                 format!("1{}", n.tags.join(","))
             };
-            (!n.is_self, kind, n.name.clone())
+            (!n.is_self, kind, mask.order(n))
         });
         order
     };
@@ -446,9 +447,9 @@ pub fn show(
         }
         paint_badge(&painter, p, r, os_icon(&n.os), badge, a);
         let label = if n.is_self {
-            format!("{} (you)", n.name)
+            format!("{} (you)", mask.name(n))
         } else {
-            n.name.clone()
+            mask.name(n)
         };
         let g = painter.layout_no_wrap(label, FontId::proportional(13.0), TEXT.gamma_multiply(a));
         let lr = Rect::from_center_size(
@@ -487,7 +488,7 @@ pub fn show(
                 (None, None) => " ? ",
                 _ => " x ",
             };
-            lines.push(format!("{sym}  {}", o.name));
+            lines.push(format!("{sym}  {}", mask.name(o)));
         }
         let text = lines.join("\n");
         let galley = painter.layout_no_wrap(text, FontId::monospace(12.0), TEXT);

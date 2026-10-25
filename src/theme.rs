@@ -52,6 +52,12 @@ pub mod icon {
     pub const KEY: &str = "\u{f084}";
     pub const LOCK: &str = "\u{f023}";
     pub const PLUG: &str = "\u{f1e6}";
+    pub const EYE_SLASH: &str = "\u{f070}";
+    pub const GEAR: &str = "\u{f013}";
+    pub const CHEVRON_DOWN: &str = "\u{f078}";
+    pub const CHEVRON_RIGHT: &str = "\u{f054}";
+    pub const HELP: &str = "\u{f059}";
+    pub const EXTERNAL: &str = "\u{f08e}";
 }
 
 pub fn os_icon(os: &str) -> &'static str {
