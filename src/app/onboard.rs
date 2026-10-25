@@ -1,7 +1,7 @@
 //! First-run walkthrough: what the app is for, what OS versions add and what they
 //! cost, setting up the API credential step by step, and a few things worth
-//! knowing. It shows once, can be reopened from the sidebar, and every step can
-//! be skipped.
+//! knowing. It shows once, can be reopened from Settings or the status menu, and
+//! every step can be skipped.
 
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -28,11 +28,7 @@ enum Act {
 }
 
 fn state_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("tailscale-desktop-unofficial").join("onboarded"))
+    Some(crate::settings::config_dir()?.join("onboarded"))
 }
 
 /// The step to open on at launch: the first one on a fresh install, or the one
@@ -146,7 +142,7 @@ impl App {
                 // Two lines of name before it shortens, and the full name on hover.
                 let color = if n.online || n.is_self { TEXT } else { MUTED };
                 let mut job = egui::text::LayoutJob::single_section(
-                    n.name.clone(),
+                    self.mask.name(n),
                     egui::TextFormat::simple(egui::FontId::proportional(11.5), color),
                 );
                 job.wrap = egui::text::TextWrapping {
@@ -174,7 +170,7 @@ impl App {
                     vec2(slot - 4.0, 104.0),
                 );
                 ui.interact(hit, ui.id().with(("welcome-node", i)), egui::Sense::hover())
-                    .on_hover_text(&n.name);
+                    .on_hover_text(self.mask.name(n));
             }
             let online = s.all().filter(|n| n.online || n.is_self).count();
             let tagged = nodes.iter().any(|n| !n.tags.is_empty());
@@ -240,11 +236,12 @@ impl App {
                 .find(|p| p.online && p.tags.is_empty())
                 .or(s.peers.first());
             panel(ui, |ui| {
-                preview_row(ui, &s.me, &self.os_of(&s.me), None);
+                let kernel = self.settings.show_kernel;
+                preview_row(ui, &s.me, &self.mask.name(&s.me), &self.os_of(&s.me), kernel, None);
                 if let Some(p) = peer {
                     divider(ui);
                     let hint = (!self.api.connected).then_some("available after setup");
-                    preview_row(ui, p, &self.os_of(p), hint);
+                    preview_row(ui, p, &self.mask.name(p), &self.os_of(p), kernel, hint);
                 }
             });
         }
@@ -265,7 +262,7 @@ impl App {
             (icon::KEY, "It is stored in your keyring."),
             (
                 icon::PLUG,
-                "Remove it any time with Disconnect in the sidebar.",
+                "Remove it any time from Settings.",
             ),
         ] {
             ui.horizontal_top(|ui| {
@@ -418,7 +415,8 @@ impl App {
             panel(ui, |ui| {
                 let last = nodes.len().saturating_sub(1);
                 for (i, n) in nodes.iter().enumerate() {
-                    preview_row(ui, n, &self.os_of(n), None);
+                    let name = self.mask.name(n);
+                    preview_row(ui, n, &name, &self.os_of(n), self.settings.show_kernel, None);
                     if i != last {
                         divider(ui);
                     }
@@ -471,7 +469,7 @@ impl App {
             ui.add_space(12.0);
             note(
                 ui,
-                "OS versions stay off for now. Set them up any time from the sidebar.",
+                "OS versions stay off for now. Set them up any time from Settings.",
             );
         }
         ui.add_space(26.0);
@@ -577,7 +575,14 @@ fn labelled(n: &crate::ts::Node) -> Badge {
 }
 
 /// A device as the list shows it: ring, name, and what it runs.
-fn preview_row(ui: &mut Ui, n: &crate::ts::Node, os: &OsInfo, hint: Option<&str>) {
+fn preview_row(
+    ui: &mut Ui,
+    n: &crate::ts::Node,
+    name: &str,
+    os: &OsInfo,
+    kernel: bool,
+    hint: Option<&str>,
+) {
     ui.horizontal(|ui| {
         let (r, _) = ui.allocate_exact_size(vec2(34.0, 34.0), egui::Sense::hover());
         paint_badge(
@@ -592,7 +597,7 @@ fn preview_row(ui: &mut Ui, n: &crate::ts::Node, os: &OsInfo, hint: Option<&str>
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             ui.horizontal(|ui| {
-                ui.label(RichText::new(&n.name).strong());
+                ui.label(RichText::new(name).strong());
                 if n.is_self {
                     ui.label(RichText::new("this device").size(11.5).color(ACCENT));
                 }
@@ -600,7 +605,7 @@ fn preview_row(ui: &mut Ui, n: &crate::ts::Node, os: &OsInfo, hint: Option<&str>
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 12.0;
                 ui.label(RichText::new(os.title()).size(12.5).color(MUTED));
-                if let Some(d) = os.detail() {
+                if let Some(d) = os.detail().filter(|_| kernel) {
                     ui.label(RichText::new(d).size(12.5).color(FAINT));
                 }
                 // What setup adds, shown as locked until then.

@@ -462,6 +462,27 @@ pub fn start_daemon() -> Result<(), String> {
     run_as_root(&["systemctl", "start", "tailscaled"])
 }
 
+/// Tailscale's own page on IP forwarding, the one its CLI links to.
+pub const FORWARDING_URL: &str = "https://tailscale.com/s/ip-forwarding";
+
+/// The sysctl file this app owns, so turning forwarding on can replace it
+/// without touching anyone else's settings.
+const FORWARDING_FILE: &str = "/etc/sysctl.d/99-tailscale-desktop.conf";
+
+/// Whether a tailscaled health warning is the one about IP forwarding.
+pub fn is_forwarding_warning(text: &str) -> bool {
+    text.contains("IP forwarding is disabled")
+}
+
+/// Turns IP forwarding on now and at every boot, as Tailscale's guide does, so
+/// this device can act as an exit node or subnet router.
+pub fn enable_ip_forwarding() -> Result<(), String> {
+    let script = format!(
+        "printf 'net.ipv4.ip_forward = 1\\nnet.ipv6.conf.all.forwarding = 1\\n' > {FORWARDING_FILE} && sysctl -p {FORWARDING_FILE}"
+    );
+    run_as_root(&["sh", "-c", &script])
+}
+
 /// Runs a command as root. pkexec when a polkit agent is around to ask, otherwise
 /// a terminal window running sudo so the password or face prompt has somewhere to go.
 pub fn run_as_root(cmd: &[&str]) -> Result<(), String> {
