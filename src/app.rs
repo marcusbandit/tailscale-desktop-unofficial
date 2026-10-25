@@ -36,6 +36,9 @@ enum Msg {
     Done(String, Result<String, String>),
     /// Files chosen in the Taildrop file dialog, to stage for sending.
     Picked(Vec<PathBuf>),
+    /// A Taildrop send finished: the files it took, and the devices (by stable
+    /// id) that got all of them.
+    Sent(Vec<PathBuf>, Vec<String>),
     /// This device's own Hostinfo.
     OsLocal(OsInfo),
     /// The API's view of every device; `None` when no credential is stored.
@@ -234,7 +237,7 @@ impl App {
             _ => {}
         }
         if let Ok(v) = std::env::var("TSDU_STAGE") {
-            self.stage(v.split(':').map(PathBuf::from).collect());
+            self.stage(v.split(':').filter(|p| !p.is_empty()).map(PathBuf::from).collect());
         }
         if let Ok(v) = std::env::var("TSDU_TARGETS") {
             self.drop.pending_names = v.split(',').map(str::to_owned).collect();
@@ -429,12 +432,9 @@ impl App {
                 Msg::Ping(id, r) => self.pings.entry(id).or_default().results.push(r),
                 Msg::PingDone(id) => self.pings.entry(id).or_default().running = false,
                 Msg::Picked(files) => self.stage(files),
+                Msg::Sent(files, delivered) => self.sent(files, delivered),
                 Msg::Done(key, r) => {
                     self.busy.remove(&key);
-                    // Sent files leave the list; the devices stay picked for the next ones.
-                    if key == "send-many" && r.is_ok() {
-                        self.drop.files.clear();
-                    }
                     // tailscaled only re-checks forwarding on its next reconfig,
                     // so the fixed warning is closed here.
                     if key == "forwarding" && r.is_ok() {
@@ -1946,11 +1946,12 @@ fn send_all(files: &[PathBuf], ip: &str, name: &str) -> Result<String, String> {
     for f in files {
         ts::send_file(f, ip)?;
     }
-    Ok(format!(
-        "Sent {} file{} to {name}",
-        files.len(),
-        if files.len() == 1 { "" } else { "s" }
-    ))
+    Ok(format!("Sent {} to {name}", files_label(files.len())))
+}
+
+/// "1 file", "3 files".
+fn files_label(n: usize) -> String {
+    format!("{n} file{}", if n == 1 { "" } else { "s" })
 }
 
 fn access_text(a: &Access) -> (&'static str, Color32, String) {

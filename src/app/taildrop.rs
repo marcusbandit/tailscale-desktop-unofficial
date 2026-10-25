@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use eframe::egui::{self, Align, Layout, Pos2, Rect, RichText, Sense, Shape, Stroke, Ui, vec2};
 
-use super::{App, Msg, bytes, icon_button, send_all};
+use super::{App, Msg, bytes, files_label, icon_button, send_all};
 use crate::theme::{icon, *};
 use crate::ts::{self, Node};
 use crate::widgets::{self, Btn};
@@ -28,9 +28,25 @@ pub(super) struct DropState {
     /// move the pointer during a drag, so a drop only counts as onto a chip
     /// when the pointer moved since.
     pub drag_from: Option<Option<Pos2>>,
+    /// How many devices the running send goes to; 0 when none is running.
+    pub sending: usize,
 }
 
 impl App {
+    /// A send finished. Devices that got everything are unpicked, so a retry
+    /// only goes to the ones that failed; when all made it, the sent files
+    /// leave the list. Files added during the send stay.
+    pub(super) fn sent(&mut self, files: Vec<PathBuf>, delivered: Vec<String>) {
+        let all = delivered.len() == self.drop.sending;
+        for id in &delivered {
+            self.drop.targets.remove(id);
+        }
+        if all {
+            self.drop.files.retain(|(f, _)| !files.contains(f));
+        }
+        self.drop.sending = 0;
+    }
+
     /// Adds files to the list waiting for Send, skipping ones already on it.
     pub(super) fn stage(&mut self, files: Vec<PathBuf>) {
         for f in files {
@@ -49,9 +65,14 @@ impl App {
         peers.sort_by_key(|p| super::display_order(p, &self.mask));
         let (ready, unavailable): (Vec<&Node>, Vec<&Node>) =
             peers.into_iter().partition(|p| p.taildrop_ok());
-        for name in std::mem::take(&mut self.drop.pending_names) {
-            if let Some(p) = ready.iter().find(|p| self.mask.name(p) == name) {
-                self.drop.targets.insert(p.stable_id.clone());
+        // Names that don't match yet wait for a later snapshot.
+        let names = std::mem::take(&mut self.drop.pending_names);
+        for name in names {
+            match ready.iter().find(|p| self.mask.name(p) == name) {
+                Some(p) => {
+                    self.drop.targets.insert(p.stable_id.clone());
+                }
+                None => self.drop.pending_names.push(name),
             }
         }
         // A device that went away can't stay picked.
@@ -196,13 +217,15 @@ impl App {
 
     /// The files waiting for Send, each with a way to take it back out.
     fn staged(&mut self, ui: &mut Ui) {
+        // The running send already has its copy of the list.
+        let busy = self.busy.contains("send-many");
         ui.horizontal(|ui| {
             ui.set_min_height(28.0);
             let n = self.drop.files.len();
             let total: u64 = self.drop.files.iter().map(|(_, b)| b).sum();
             widgets::section(ui, &format!("Files to send ({n}, {})", bytes(total)));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.add(Btn::new("Clear").small()).clicked() {
+                if ui.add_enabled(!busy, Btn::new("Clear").small()).clicked() {
                     self.drop.files.clear();
                 }
             });
@@ -219,7 +242,7 @@ impl App {
                     .on_hover_text(f.display().to_string());
                 ui.label(RichText::new(bytes(*size)).size(ty::SMALL).color(MUTED));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if icon_button(ui, icon::CLOSE, "Take out", true) {
+                    if icon_button(ui, icon::CLOSE, "Take out", !busy) {
                         remove = Some(i);
                     }
                 });
@@ -234,7 +257,7 @@ impl App {
     fn send_bar(&mut self, ui: &mut Ui, ctx: &egui::Context, picked: &[Node]) {
         let n = self.drop.files.len();
         let names: Vec<String> = picked.iter().map(|p| self.mask.name(p)).collect();
-        let what = format!("{n} file{}", if n == 1 { "" } else { "s" });
+        let what = files_label(n);
         let to = match names.len() {
             0 => String::new(),
             1 => names[0].clone(),
@@ -266,11 +289,17 @@ impl App {
 
     fn send_staged(&mut self, ctx: &egui::Context, picked: &[Node]) {
         let files: Vec<PathBuf> = self.drop.files.iter().map(|(f, _)| f.clone()).collect();
-        let targets: Vec<(String, String)> = picked
+        let targets: Vec<Target> = picked
             .iter()
-            .map(|n| (n.ipv4().to_owned(), self.mask.name(n)))
+            .map(|n| (n.stable_id.clone(), n.ipv4().to_owned(), self.mask.name(n)))
             .collect();
-        self.act(ctx, "send-many", move || send_to_all(&files, &targets));
+        self.drop.sending = targets.len();
+        let tx = self.tx.clone();
+        self.act(ctx, "send-many", move || {
+            let (delivered, r) = send_to_all(&files, &targets);
+            tx.send(Msg::Sent(files, delivered)).ok();
+            r
+        });
     }
 
     /// Opens the file dialog off the UI thread; the choice comes back as `Msg::Picked`.
@@ -403,18 +432,24 @@ impl App {
     }
 }
 
+/// A device to send to: stable id, address, shown name.
+type Target = (String, String, String);
+
 /// Tries every device even when one fails, and says which got the files.
-fn send_to_all(files: &[PathBuf], targets: &[(String, String)]) -> Result<String, String> {
-    let (mut ok, mut failed) = (Vec::new(), Vec::new());
-    for (ip, name) in targets {
+/// Also returns the ids of the devices that got all of them.
+fn send_to_all(files: &[PathBuf], targets: &[Target]) -> (Vec<String>, Result<String, String>) {
+    let (mut ids, mut ok, mut failed) = (Vec::new(), Vec::new(), Vec::new());
+    for (id, ip, name) in targets {
         match send_all(files, ip, name) {
-            Ok(_) => ok.push(name.clone()),
+            Ok(_) => {
+                ids.push(id.clone());
+                ok.push(name.clone());
+            }
             Err(e) => failed.push(format!("{name}: {e}")),
         }
     }
-    let n = files.len();
-    let what = format!("{n} file{}", if n == 1 { "" } else { "s" });
-    match (ok.is_empty(), failed.is_empty()) {
+    let what = files_label(files.len());
+    let r = match (ok.is_empty(), failed.is_empty()) {
         (_, true) => Ok(format!("Sent {what} to {}", ok.join(", "))),
         (true, false) => Err(format!("Could not send {what}. {}", failed.join("; "))),
         (false, false) => Err(format!(
@@ -422,7 +457,8 @@ fn send_to_all(files: &[PathBuf], targets: &[(String, String)]) -> Result<String
             ok.join(", "),
             failed.join("; ")
         )),
-    }
+    };
+    (ids, r)
 }
 
 /// A row that opens and closes a list, chevron first.
