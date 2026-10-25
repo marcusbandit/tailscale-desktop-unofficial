@@ -148,6 +148,7 @@ pub fn show(
     m: &Matrix,
     selected: &mut Option<String>,
     mask: &crate::privacy::Mask,
+    glyphs: &HashMap<String, &'static str>,
 ) {
     if st.cam.zoom == 0.0 {
         st.cam.zoom = 1.0;
@@ -445,7 +446,8 @@ pub fn show(
             let halo = if online { GREEN } else { MUTED };
             painter.circle_filled(p, r + 11.0, halo.gamma_multiply(0.14 * a));
         }
-        paint_badge(&painter, p, r, os_icon(&n.os), badge, a);
+        let glyph = glyphs.get(&n.stable_id).copied().unwrap_or("\u{f233}");
+        paint_badge(&painter, p, r, glyph, badge, a);
         let label = if n.is_self {
             format!("{} (you)", mask.name(n))
         } else {

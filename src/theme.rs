@@ -36,11 +36,6 @@ pub mod icon {
     pub const GRAPH: &str = "\u{f1e0}";
     pub const LIST: &str = "\u{f03a}";
     pub const BOLT: &str = "\u{f0e7}";
-    pub const LINUX: &str = "\u{f17c}";
-    pub const ANDROID: &str = "\u{f17b}";
-    pub const WINDOWS: &str = "\u{f17a}";
-    pub const APPLE: &str = "\u{f179}";
-    pub const SERVER: &str = "\u{f233}";
     pub const WARN: &str = "\u{f071}";
     pub const INBOX: &str = "\u{f01c}";
     pub const CLOSE: &str = "\u{f00d}";
@@ -60,15 +55,6 @@ pub mod icon {
     pub const EXTERNAL: &str = "\u{f08e}";
 }
 
-pub fn os_icon(os: &str) -> &'static str {
-    match os {
-        "linux" => icon::LINUX,
-        "android" => icon::ANDROID,
-        "windows" => icon::WINDOWS,
-        "macOS" | "iOS" | "tvOS" => icon::APPLE,
-        _ => icon::SERVER,
-    }
-}
 
 /// Paints one icon glyph with its ink centered on `center`. Text layout centers the
 /// advance box, and Nerd Font glyphs sit off center inside theirs.
@@ -222,11 +208,19 @@ pub fn install(ctx: &egui::Context) {
         FontFamily::Name("strong".into()),
         true,
     );
+    // OS logos ship with the app, right behind the UI face, so they show
+    // without a Nerd Font and include logos newer than the system's.
+    fonts.font_data.insert(
+        "os-icons".to_owned(),
+        Arc::new(FontData::from_static(include_bytes!("../assets/os-icons.ttf"))),
+    );
+    let list = fonts.families.entry(FontFamily::Proportional).or_default();
+    list.insert(list.len().min(1), "os-icons".to_owned());
     fonts
         .families
         .entry(FontFamily::Name("strong".into()))
         .or_default()
-        .extend(["icons".to_owned()]);
+        .extend(["os-icons".to_owned(), "icons".to_owned()]);
     ctx.set_fonts(fonts);
 
     ctx.all_styles_mut(|style| {

@@ -51,9 +51,8 @@ impl OsInfo {
                 }
             }
             "android" if !v.is_empty() => format!("Android {}", major(v)),
-            "windows" if !v.is_empty() => match windows_build(v) {
-                Some(b) if b >= 22000 => "Windows 11".into(),
-                Some(_) => "Windows 10".into(),
+            "windows" if !v.is_empty() => match windows_release(v) {
+                Some(r) => format!("Windows {r}"),
                 None => format!("Windows {v}"),
             },
             "macOS" if !v.is_empty() => {
@@ -122,6 +121,18 @@ fn windows_build(v: &str) -> Option<u32> {
     v.split('.').nth(2)?.parse().ok()
 }
 
+/// The Windows a build number belongs to: "11", "10", "8.1", "8" or "7".
+pub fn windows_release(v: &str) -> Option<&'static str> {
+    Some(match windows_build(v)? {
+        22000.. => "11",
+        10240.. => "10",
+        9600.. => "8.1",
+        9200.. => "8",
+        7600.. => "7",
+        _ => return None,
+    })
+}
+
 fn macos_name(v: &str) -> Option<&'static str> {
     Some(match major(v).parse::<u32>().ok()? {
         11 => "Big Sur",
@@ -164,6 +175,18 @@ fn distro_name(id: &str) -> String {
         "openwrt" => "OpenWrt",
         "steamos" => "SteamOS",
         "bazzite" => "Bazzite",
+        "nobara" => "Nobara",
+        "garuda" => "Garuda Linux",
+        "artix" => "Artix Linux",
+        "kali" => "Kali Linux",
+        "elementary" => "elementary OS",
+        "zorin" => "Zorin OS",
+        "neon" => "KDE neon",
+        "haos" => "Home Assistant OS",
+        "opensuse-microos" => "openSUSE MicroOS",
+        "opensuse-slowroll" => "openSUSE Slowroll",
+        "mx" => "MX Linux",
+        "postmarketos" => "postmarketOS",
         _ => "",
     };
     if !known.is_empty() {
@@ -505,6 +528,8 @@ mod tests {
         assert_eq!(win.title(), "Windows 11");
         assert_eq!(win.detail().as_deref(), Some("build 26100"));
         assert_eq!(win.detail_row(), Some(("Build", "26100".to_owned())));
+        assert_eq!(info("windows", "", "", "6.1.7601").title(), "Windows 7");
+        assert_eq!(info("windows", "", "", "6.3.9600").title(), "Windows 8.1");
         assert_eq!(
             info("windows", "", "", "10.0.19045.1").title(),
             "Windows 10"

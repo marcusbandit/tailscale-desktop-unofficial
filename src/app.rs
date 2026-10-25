@@ -448,6 +448,11 @@ impl App {
         self.os = osinfo::combine(&self.os_api, local);
     }
 
+    /// The badge glyph for a device and what hovering it says.
+    fn icon_of(&self, n: &Node) -> crate::osicon::Icon {
+        crate::osicon::of(&self.os_of(n), &n.name, &n.hostname)
+    }
+
     /// What is known about a device's system, at least the OS family.
     fn os_of(&self, n: &Node) -> OsInfo {
         self.os
@@ -1042,7 +1047,11 @@ impl eframe::App for App {
                         let (snap, m) =
                             (self.snap.as_ref().unwrap(), self.matrix.as_ref().unwrap());
                         let mask = self.mask.clone();
-                        graph::show(ui, &mut self.graph, snap, m, &mut self.selected, &mask);
+                        let glyphs: HashMap<String, &'static str> = snap
+                            .all()
+                            .map(|n| (n.stable_id.clone(), self.icon_of(n).glyph))
+                            .collect();
+                        graph::show(ui, &mut self.graph, snap, m, &mut self.selected, &mask, &glyphs);
                     }
                     View::Taildrop => self.taildrop(ui),
                     View::Settings => {}
@@ -1484,14 +1493,16 @@ impl App {
 
         let inner = rect.shrink2(vec2(14.0, 6.0));
         let dim = !n.online && !n.is_self;
-        paint_badge(
-            ui.painter(),
-            egui::pos2(inner.left() + 18.0, inner.center().y),
-            17.0,
-            os_icon(&n.os),
-            Badge::of(n),
-            1.0,
-        );
+        let os_icon = self.icon_of(n);
+        let badge_c = egui::pos2(inner.left() + 18.0, inner.center().y);
+        paint_badge(ui.painter(), badge_c, 17.0, os_icon.glyph, Badge::of(n), 1.0);
+        // Hovering the badge says what the device is.
+        ui.interact(
+            egui::Rect::from_center_size(badge_c, vec2(36.0, 36.0)),
+            ui.id().with(("badge", &n.stable_id)),
+            Sense::hover(),
+        )
+        .on_hover_text(&os_icon.label);
 
         // Fixed columns so every row lines up; the IP gives way first when the
         // list gets narrow.
@@ -1729,7 +1740,9 @@ impl App {
         let mask = self.mask.clone();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(os_icon(&n.os)).size(22.0).color(if n.online { TEXT } else { MUTED }));
+                let os_icon = self.icon_of(&n);
+                ui.label(RichText::new(os_icon.glyph).size(22.0).color(if n.online { TEXT } else { MUTED }))
+                    .on_hover_text(&os_icon.label);
                 ui.add_space(4.0);
                 ui.label(RichText::new(mask.name(&n)).heading());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1980,7 +1993,8 @@ impl App {
             for p in peers {
                 card(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(os_icon(&p.os)).size(16.0));
+                        let os_icon = self.icon_of(p);
+                        ui.label(RichText::new(os_icon.glyph).size(16.0)).on_hover_text(&os_icon.label);
                         ui.label(RichText::new(self.mask.name(p)).strong());
                         ui.label(RichText::new(p.taildrop_reason()).size(12.0).color(if p.taildrop_ok() { GREEN } else { MUTED }));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
