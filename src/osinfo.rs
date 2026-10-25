@@ -40,16 +40,11 @@ impl OsInfo {
     pub fn title(&self) -> String {
         let v = self.os_version.as_str();
         match self.os.as_str() {
-            "linux" => {
-                let name = distro_name(&self.distro);
-                let ver = self.distro_version.trim();
-                // Rolling distros report their own name as the version.
-                if ver.is_empty() || ver.eq_ignore_ascii_case(&name) {
-                    name
-                } else {
-                    format!("{name} {ver}")
-                }
-            }
+            "linux" => self.distro_title(),
+            // pfSense, OPNsense and TrueNAS CORE run on FreeBSD and say so.
+            "freebsd" if !self.distro.is_empty() => self.distro_title(),
+            "freebsd" => "FreeBSD".into(),
+            "openbsd" => "OpenBSD".into(),
             "android" if !v.is_empty() => format!("Android {}", major(v)),
             "windows" if !v.is_empty() => match windows_release(v) {
                 Some(r) => format!("Windows {r}"),
@@ -67,6 +62,17 @@ impl OsInfo {
             "windows" => "Windows".into(),
             "" => "Unknown system".into(),
             other => other.to_owned(),
+        }
+    }
+
+    fn distro_title(&self) -> String {
+        let name = distro_name(&self.distro);
+        let ver = self.distro_version.trim();
+        // Rolling distros report their own name as the version.
+        if ver.is_empty() || ver.eq_ignore_ascii_case(&name) {
+            name
+        } else {
+            format!("{name} {ver}")
         }
     }
 
@@ -146,51 +152,11 @@ fn macos_name(v: &str) -> Option<&'static str> {
 }
 
 fn distro_name(id: &str) -> String {
-    let known = match id.to_ascii_lowercase().as_str() {
-        "" => "Linux",
-        "arch" => "Arch Linux",
-        "ubuntu" => "Ubuntu",
-        "debian" => "Debian",
-        "raspbian" => "Raspberry Pi OS",
-        "fedora" => "Fedora",
-        "nixos" => "NixOS",
-        "opensuse" | "opensuse-leap" => "openSUSE Leap",
-        "opensuse-tumbleweed" => "openSUSE Tumbleweed",
-        "alpine" => "Alpine",
-        "centos" => "CentOS",
-        "rhel" => "Red Hat Enterprise Linux",
-        "rocky" => "Rocky Linux",
-        "almalinux" => "AlmaLinux",
-        "gentoo" => "Gentoo",
-        "void" => "Void Linux",
-        "manjaro" => "Manjaro",
-        "endeavouros" => "EndeavourOS",
-        "cachyos" => "CachyOS",
-        "pop" => "Pop!_OS",
-        "linuxmint" => "Linux Mint",
-        "synology" => "Synology DSM",
-        "qnap" => "QNAP",
-        "unraid" => "Unraid",
-        "truenas" => "TrueNAS",
-        "openwrt" => "OpenWrt",
-        "steamos" => "SteamOS",
-        "bazzite" => "Bazzite",
-        "nobara" => "Nobara",
-        "garuda" => "Garuda Linux",
-        "artix" => "Artix Linux",
-        "kali" => "Kali Linux",
-        "elementary" => "elementary OS",
-        "zorin" => "Zorin OS",
-        "neon" => "KDE neon",
-        "haos" => "Home Assistant OS",
-        "opensuse-microos" => "openSUSE MicroOS",
-        "opensuse-slowroll" => "openSUSE Slowroll",
-        "mx" => "MX Linux",
-        "postmarketos" => "postmarketOS",
-        _ => "",
-    };
-    if !known.is_empty() {
-        return known.to_owned();
+    if id.is_empty() {
+        return "Linux".into();
+    }
+    if let Some(d) = crate::osicon::distro(id) {
+        return d.name.to_owned();
     }
     let mut c = id.chars();
     c.next()

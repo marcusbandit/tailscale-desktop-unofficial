@@ -6,6 +6,7 @@
 
 use crate::osinfo::{self, OsInfo};
 
+#[derive(Clone)]
 pub struct Icon {
     pub glyph: &'static str,
     /// "Ubuntu 26.04 on a Raspberry Pi", "Google Pixel, Android 17".
@@ -30,63 +31,88 @@ mod g {
     pub const OPENBSD: &str = "\u{f328}";
 }
 
-/// The logo for an os-release `ID`, when the font has one. Derivatives without
-/// their own logo show their base, since that is the family they belong to.
-fn distro(id: &str) -> Option<&'static str> {
-    Some(match id {
-        "arch" | "archarm" => "\u{f303}",
-        "ubuntu" => "\u{f31b}",
-        "kubuntu" => "\u{f333}",
-        "debian" => "\u{f306}",
-        "raspbian" => "\u{f315}",
-        "devuan" => "\u{f307}",
-        "fedora" | "bazzite" | "ultramarine" => "\u{f30a}",
-        "nobara" => "\u{f380}",
-        "nixos" => "\u{f313}",
-        "opensuse-tumbleweed" => "\u{f37d}",
-        "opensuse-leap" => "\u{f37e}",
-        "opensuse" | "opensuse-microos" | "opensuse-slowroll" | "sles" | "sled" => "\u{f314}",
-        "alpine" => "\u{f300}",
-        "centos" => "\u{f304}",
-        "rhel" => "\u{f316}",
-        "rocky" => "\u{f32b}",
-        "almalinux" => "\u{f31d}",
-        "gentoo" => "\u{f30d}",
-        "void" => "\u{f32e}",
-        "manjaro" | "manjaro-arm" => "\u{f312}",
-        "endeavouros" => "\u{f322}",
-        "cachyos" => "\u{f385}",
-        "garuda" => "\u{f337}",
-        "artix" => "\u{f31f}",
-        "archcraft" => "\u{f345}",
-        "arcolinux" => "\u{f346}",
-        "pop" => "\u{f32a}",
-        "linuxmint" => "\u{f30e}",
-        "elementary" => "\u{f309}",
-        "zorin" => "\u{f32f}",
-        "neon" => "\u{f331}",
-        "kali" => "\u{f327}",
-        "parrot" => "\u{f329}",
-        "mx" => "\u{f33f}",
-        "deepin" => "\u{f321}",
-        "solus" => "\u{f32d}",
-        "slackware" => "\u{f318}",
-        "mageia" => "\u{f310}",
-        "qubes" => "\u{f342}",
-        "tails" => "\u{f343}",
-        "trisquel" => "\u{f344}",
-        "puppy" => "\u{f341}",
-        "aosc" => "\u{f301}",
-        "coreos" | "fedora-coreos" => "\u{f305}",
-        "vanilla" => "\u{f366}",
-        "postmarketos" => "\u{f374}",
-        "openwrt" => "\u{f382}",
-        "steamos" => "\u{f1b6}",
-        "haos" => "\u{f07d0}",
-        "synology" | "qnap" | "unraid" | "truenas" => g::NAS,
-        _ => return None,
-    })
+pub struct Distro {
+    /// The name as people say it: "Arch Linux", "openSUSE Tumbleweed".
+    pub name: &'static str,
+    pub glyph: &'static str,
 }
+
+/// Every os-release `ID` the app knows, with its name and logo. Derivatives
+/// without a logo of their own show their base, the family they belong to.
+pub fn distro(id: &str) -> Option<Distro> {
+    let (name, glyph) = match id.to_ascii_lowercase().as_str() {
+        "arch" => ("Arch Linux", "\u{f303}"),
+        "archarm" => ("Arch Linux ARM", "\u{f303}"),
+        "ubuntu" => ("Ubuntu", "\u{f31b}"),
+        "kubuntu" => ("Kubuntu", "\u{f333}"),
+        "debian" => ("Debian", "\u{f306}"),
+        "raspbian" => ("Raspberry Pi OS", "\u{f315}"),
+        "devuan" => ("Devuan", "\u{f307}"),
+        "fedora" => ("Fedora", "\u{f30a}"),
+        "bazzite" => ("Bazzite", "\u{f30a}"),
+        "ultramarine" => ("Ultramarine Linux", "\u{f30a}"),
+        "nobara" => ("Nobara", "\u{f380}"),
+        "nixos" => ("NixOS", "\u{f313}"),
+        "opensuse-tumbleweed" => ("openSUSE Tumbleweed", "\u{f37d}"),
+        "opensuse-leap" => ("openSUSE Leap", "\u{f37e}"),
+        "opensuse" => ("openSUSE Leap", "\u{f314}"),
+        "opensuse-microos" => ("openSUSE MicroOS", "\u{f314}"),
+        "opensuse-slowroll" => ("openSUSE Slowroll", "\u{f314}"),
+        "sles" => ("SUSE Linux Enterprise Server", "\u{f314}"),
+        "sled" => ("SUSE Linux Enterprise Desktop", "\u{f314}"),
+        "alpine" => ("Alpine", "\u{f300}"),
+        "centos" => ("CentOS", "\u{f304}"),
+        "rhel" => ("Red Hat Enterprise Linux", "\u{f316}"),
+        "rocky" => ("Rocky Linux", "\u{f32b}"),
+        "almalinux" => ("AlmaLinux", "\u{f31d}"),
+        "gentoo" => ("Gentoo", "\u{f30d}"),
+        "void" => ("Void Linux", "\u{f32e}"),
+        "manjaro" => ("Manjaro", "\u{f312}"),
+        "manjaro-arm" => ("Manjaro ARM", "\u{f312}"),
+        "endeavouros" => ("EndeavourOS", "\u{f322}"),
+        "cachyos" => ("CachyOS", "\u{f385}"),
+        "garuda" => ("Garuda Linux", "\u{f337}"),
+        "artix" => ("Artix Linux", "\u{f31f}"),
+        "archcraft" => ("Archcraft", "\u{f345}"),
+        "arcolinux" => ("ArcoLinux", "\u{f346}"),
+        "pop" => ("Pop!_OS", "\u{f32a}"),
+        "linuxmint" => ("Linux Mint", "\u{f30e}"),
+        "elementary" => ("elementary OS", "\u{f309}"),
+        "zorin" => ("Zorin OS", "\u{f32f}"),
+        "neon" => ("KDE neon", "\u{f331}"),
+        "kali" => ("Kali Linux", "\u{f327}"),
+        "parrot" => ("Parrot OS", "\u{f329}"),
+        "mx" => ("MX Linux", "\u{f33f}"),
+        "deepin" => ("deepin", "\u{f321}"),
+        "solus" => ("Solus", "\u{f32d}"),
+        "slackware" => ("Slackware", "\u{f318}"),
+        "mageia" => ("Mageia", "\u{f310}"),
+        "qubes" => ("Qubes OS", "\u{f342}"),
+        "tails" => ("Tails", "\u{f343}"),
+        "trisquel" => ("Trisquel", "\u{f344}"),
+        "puppy" => ("Puppy Linux", "\u{f341}"),
+        "aosc" => ("AOSC OS", "\u{f301}"),
+        "fedora-coreos" => ("Fedora CoreOS", "\u{f305}"),
+        "vanilla" => ("Vanilla OS", "\u{f366}"),
+        "postmarketos" => ("postmarketOS", "\u{f374}"),
+        "openwrt" => ("OpenWrt", "\u{f382}"),
+        "steamos" => ("SteamOS", "\u{f1b6}"),
+        "haos" => ("Home Assistant OS", "\u{f07d0}"),
+        "synology" => ("Synology DSM", g::NAS),
+        "qnap" => ("QNAP", g::NAS),
+        "unraid" => ("Unraid", g::NAS),
+        "truenas" => ("TrueNAS", g::NAS),
+        "wdmycloud" => ("WD My Cloud", g::NAS),
+        "pfsense" => ("pfSense", g::FREEBSD),
+        "opnsense" => ("OPNsense", g::FREEBSD),
+        "gokrazy" => ("gokrazy", g::TUX),
+        _ => return None,
+    };
+    Some(Distro { name, glyph })
+}
+
+/// Shown for a system the app has nothing better for.
+pub const UNKNOWN: &str = g::SERVER;
 
 /// The words of a device's name, lowercased, split on anything that isn't a
 /// letter or digit: "SM-S918B" gives "sm" and "s918b".
@@ -105,12 +131,18 @@ fn android(w: &[String]) -> Option<(&'static str, &'static str)> {
     let has = |x: &str| w.iter().any(|v| v == x);
     let starts = |x: &str| w.iter().any(|v| v.starts_with(x));
     let google = has("pixel") || has("google");
-    let samsung = has("galaxy") || has("samsung") || has("sm");
+    // Samsung model numbers read SM-S918B: "sm", then a letter and digits.
+    let model = |p: &[String]| {
+        p[0] == "sm"
+            && p[1].starts_with(|c: char| c.is_ascii_alphabetic())
+            && p[1].contains(|c: char| c.is_ascii_digit())
+    };
+    let samsung = has("galaxy") || has("samsung") || w.windows(2).any(model);
     Some(if has("shield") {
         (g::TV, "NVIDIA Shield")
     } else if starts("chromecast") {
         (g::TV, "Chromecast with Google TV")
-    } else if starts("aft") || has("firetv") || (has("fire") && has("tv")) {
+    } else if has("firetv") || (has("fire") && has("tv")) {
         (g::TV, "Amazon Fire TV")
     } else if has("tv") || has("bravia") || has("mibox") || has("androidtv") || has("googletv") {
         (g::TV, "Android TV")
@@ -154,10 +186,10 @@ pub fn of(os: &OsInfo, name: &str, hostname: &str) -> Icon {
     let with = |kind: &str| format!("{kind}, {title}");
     let (glyph, label) = match os.os.as_str() {
         "linux" => {
-            let glyph = distro(&os.distro.to_ascii_lowercase()).unwrap_or(g::TUX);
+            let glyph = distro(&os.distro).map_or(g::TUX, |d| d.glyph);
             let kernel = os.os_version.to_ascii_lowercase();
             let pi = kernel.contains("raspi") || kernel.contains("rpi") || kernel.contains("bcm2");
-            let label = if pi && os.distro != "raspbian" {
+            let label = if pi && !os.distro.eq_ignore_ascii_case("raspbian") {
                 format!("{title} on a Raspberry Pi")
             } else {
                 title
@@ -185,8 +217,8 @@ pub fn of(os: &OsInfo, name: &str, hostname: &str) -> Icon {
             Some((glyph, kind)) => (glyph, with(kind)),
             None => (g::ANDROID, title),
         },
-        "freebsd" => (g::FREEBSD, "FreeBSD".into()),
-        "openbsd" => (g::OPENBSD, "OpenBSD".into()),
+        "freebsd" => (distro(&os.distro).map_or(g::FREEBSD, |d| d.glyph), title),
+        "openbsd" => (g::OPENBSD, title),
         _ => (g::SERVER, title),
     };
     Icon { glyph, label }
@@ -218,6 +250,13 @@ mod tests {
         let pi = of(&os("linux", "ubuntu", "7.0.0-1020-raspi"), "diablo-pi", "diablo-pi");
         assert_eq!(pi.glyph, "\u{f31b}");
         assert_eq!(pi.label, "Ubuntu on a Raspberry Pi");
+        let rpi = of(&os("linux", "Raspbian", "6.6.51+rpt-rpi-v8"), "pi", "pi");
+        assert_eq!(rpi.label, "Raspberry Pi OS");
+        assert_eq!(of(&os("linux", "wdmycloud", ""), "a", "a").glyph, g::NAS);
+        let pf = of(&os("freebsd", "pfsense", ""), "fw", "fw");
+        assert_eq!((pf.glyph, pf.label.as_str()), (g::FREEBSD, "pfSense"));
+        assert_eq!(of(&os("freebsd", "", ""), "a", "a").label, "FreeBSD");
+        assert_eq!(of(&os("freebsd", "truenas", ""), "a", "a").glyph, g::NAS);
     }
 
     #[test]
@@ -242,8 +281,13 @@ mod tests {
         // A renamed phone gives nothing away and stays the robot.
         let renamed = of(&os("android", "", "17"), "01x-engineer", "0,1x Engineer");
         assert_eq!((renamed.glyph, renamed.label.as_str()), (g::ANDROID, "Android 17"));
-        // "tab" inside another word doesn't make a tablet.
+        // "tab" inside another word doesn't make a tablet, nor "aft" a Fire TV,
+        // nor initials SM a Samsung.
         assert_eq!(of(&os("android", "", "17"), "stable", "stable").glyph, g::ANDROID);
+        assert_eq!(of(&os("android", "", "14"), "aftab-phone", "aftab").glyph, g::ANDROID);
+        assert_eq!(of(&os("android", "", "14"), "sm-phone", "SM phone").label, "Android 14");
+        let fire = of(&os("android", "", "9"), "fire-tv-stick", "Fire TV Stick");
+        assert_eq!((fire.glyph, fire.label.as_str()), (g::TV, "Amazon Fire TV, Android 9"));
         let ipad = of(&os("iOS", "", "18.1"), "ipad", "iPad");
         assert_eq!((ipad.glyph, ipad.label.as_str()), (g::TABLET, "iPad, iOS 18.1"));
         assert_eq!(of(&os("iOS", "", "18.1"), "phone", "localhost").glyph, g::PHONE);

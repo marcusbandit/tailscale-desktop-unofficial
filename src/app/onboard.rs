@@ -171,7 +171,7 @@ impl App {
                     vec2(slot - 4.0, 104.0),
                 );
                 ui.interact(hit, ui.id().with(("welcome-node", i)), egui::Sense::hover())
-                    .on_hover_text(self.mask.name(n));
+                    .on_hover_text(format!("{}\n{}", self.mask.name(n), self.icon_of(n).label));
             }
             let online = s.all().filter(|n| n.online || n.is_self).count();
             let tagged = nodes.iter().any(|n| !n.tags.is_empty());

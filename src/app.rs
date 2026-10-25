@@ -116,6 +116,8 @@ pub struct App {
     dismissed: HashSet<String>,
     /// Test hook: open the status menu on the first frame.
     open_menu: bool,
+    /// Each device's badge icon, worked out once per snapshot or OS update.
+    icons: HashMap<String, crate::osicon::Icon>,
 }
 
 #[derive(Default)]
@@ -185,6 +187,7 @@ impl App {
             settings,
             dismissed: HashSet::new(),
             open_menu: std::env::var("TSDU_MENU").is_ok(),
+            icons: HashMap::new(),
             tx,
             rx,
             wake,
@@ -229,6 +232,18 @@ impl App {
     fn remask(&mut self) {
         let s = &self.settings;
         self.mask = Rc::new(Mask::new(s.privacy, s.privacy_names, self.snap.as_ref()));
+        self.reicon();
+    }
+
+    /// Works out every badge icon again; the names it reads change with the
+    /// snapshot, the OS details and privacy mode.
+    fn reicon(&mut self) {
+        let icons = self.snap.as_ref().map_or_else(HashMap::new, |s| {
+            s.all()
+                .map(|n| (n.stable_id.clone(), self.make_icon(n)))
+                .collect()
+        });
+        self.icons = icons;
     }
 
     /// Changes a setting, saves it and redraws with it.
@@ -446,11 +461,25 @@ impl App {
         let me = self.snap.as_ref().map(|s| s.me.stable_id.clone());
         let local = me.as_deref().zip(self.os_local.as_ref());
         self.os = osinfo::combine(&self.os_api, local);
+        self.reicon();
     }
 
     /// The badge glyph for a device and what hovering it says.
     fn icon_of(&self, n: &Node) -> crate::osicon::Icon {
-        crate::osicon::of(&self.os_of(n), &n.name, &n.hostname)
+        self.icons
+            .get(&n.stable_id)
+            .cloned()
+            .unwrap_or_else(|| self.make_icon(n))
+    }
+
+    /// While names are hidden, the kind of device isn't read from them either.
+    fn make_icon(&self, n: &Node) -> crate::osicon::Icon {
+        let (name, host) = if self.mask.hides_names() {
+            ("", "")
+        } else {
+            (n.name.as_str(), n.hostname.as_str())
+        };
+        crate::osicon::of(&self.os_of(n), name, host)
     }
 
     /// What is known about a device's system, at least the OS family.
@@ -1047,11 +1076,7 @@ impl eframe::App for App {
                         let (snap, m) =
                             (self.snap.as_ref().unwrap(), self.matrix.as_ref().unwrap());
                         let mask = self.mask.clone();
-                        let glyphs: HashMap<String, &'static str> = snap
-                            .all()
-                            .map(|n| (n.stable_id.clone(), self.icon_of(n).glyph))
-                            .collect();
-                        graph::show(ui, &mut self.graph, snap, m, &mut self.selected, &mask, &glyphs);
+                        graph::show(ui, &mut self.graph, snap, m, &mut self.selected, &mask, &self.icons);
                     }
                     View::Taildrop => self.taildrop(ui),
                     View::Settings => {}
@@ -1439,13 +1464,15 @@ impl App {
     /// place; a bare word looks everywhere.
     fn matches(&self, n: &Node, query: &str) -> bool {
         let os = self.os_of(n);
+        // The hover text, so os:pixel, os:ipad and os:raspberry find devices too.
+        let kind = self.icon_of(n).label;
         let has = |hay: &str, v: &str| hay.to_lowercase().contains(v);
         query.split_whitespace().all(|word| {
             let w = word.to_lowercase();
             if let Some(v) = w.strip_prefix("tag:") {
                 n.tags.iter().any(|t| has(t.trim_start_matches("tag:"), v))
             } else if let Some(v) = w.strip_prefix("os:") {
-                has(&os.title(), v) || has(&n.os, v)
+                has(&os.title(), v) || has(&n.os, v) || has(&kind, v)
             } else if let Some(v) = w.strip_prefix("user:") {
                 has(&n.user_login, v) || has(&n.user_display, v)
             } else if let Some(v) = w.strip_prefix("is:") {
@@ -1463,7 +1490,7 @@ impl App {
                     || n.ips.iter().any(|i| i.contains(&w))
                     || n.tags.iter().any(|t| has(t, &w))
                     || has(&n.user_login, &w)
-                    || has(&os.title(), &w)
+                    || has(&kind, &w)
                     || has(&n.os, &w)
             }
         })
