@@ -24,9 +24,19 @@ mod g {
     pub const TV: &str = "\u{f0502}";
     pub const WATCH: &str = "\u{f0589}";
     pub const NAS: &str = "\u{f08f3}";
-    pub const WINDOWS_11: &str = "\u{f05b3}";
+    /// The flat four squares; the tilted mark is Windows 8 and 10.
+    pub const WINDOWS_11: &str = "\u{e8e5}";
     pub const WINDOWS_10: &str = "\u{f17a}";
     pub const WINDOWS_7: &str = "\u{f0a21}";
+    // Phone and TV makers, drawn from Simple Icons into the bundled font.
+    // Makers whose only logo is a wordmark (Samsung, Sony, Honor, Oppo, vivo,
+    // Nokia) stay the robot: a word shrunk to a badge can't be read.
+    pub const MOTOROLA: &str = "\u{100001}";
+    pub const ONEPLUS: &str = "\u{100002}";
+    pub const XIAOMI: &str = "\u{100003}";
+    pub const HUAWEI: &str = "\u{100004}";
+    pub const NVIDIA: &str = "\u{100005}";
+    pub const AMAZON: &str = "\u{100006}";
     pub const FREEBSD: &str = "\u{f30c}";
     pub const OPENBSD: &str = "\u{f328}";
 }
@@ -139,11 +149,11 @@ fn android(w: &[String]) -> Option<(&'static str, &'static str)> {
     };
     let samsung = has("galaxy") || has("samsung") || w.windows(2).any(model);
     Some(if has("shield") {
-        (g::TV, "NVIDIA Shield")
+        (g::NVIDIA, "NVIDIA Shield")
     } else if starts("chromecast") {
         (g::TV, "Chromecast with Google TV")
     } else if has("firetv") || (has("fire") && has("tv")) {
-        (g::TV, "Amazon Fire TV")
+        (g::AMAZON, "Amazon Fire TV")
     } else if has("tv") || has("bravia") || has("mibox") || has("androidtv") || has("googletv") {
         (g::TV, "Android TV")
     } else if has("watch") || has("wear") {
@@ -162,11 +172,21 @@ fn android(w: &[String]) -> Option<(&'static str, &'static str)> {
     } else if samsung {
         (g::ANDROID, "Samsung Galaxy")
     } else if has("oneplus") {
-        (g::ANDROID, "OnePlus")
+        (g::ONEPLUS, "OnePlus")
     } else if has("xiaomi") || has("redmi") || has("poco") {
-        (g::ANDROID, "Xiaomi")
-    } else if has("moto") || has("motorola") {
-        (g::ANDROID, "Motorola")
+        (g::XIAOMI, "Xiaomi")
+    } else if has("moto") || has("motorola") || has("razr") {
+        (g::MOTOROLA, "Motorola")
+    } else if has("huawei") {
+        (g::HUAWEI, "Huawei")
+    } else if has("honor") {
+        (g::ANDROID, "Honor")
+    } else if has("oppo") {
+        (g::ANDROID, "Oppo")
+    } else if has("vivo") {
+        (g::ANDROID, "vivo")
+    } else if has("nokia") {
+        (g::ANDROID, "Nokia")
     } else if has("xperia") {
         (g::ANDROID, "Sony Xperia")
     } else if has("fairphone") {
@@ -261,7 +281,9 @@ mod tests {
 
     #[test]
     fn windows_marks_follow_the_build() {
-        assert_eq!(of(&os("windows", "", "10.0.26100.1"), "a", "a").glyph, g::WINDOWS_11);
+        // The flat four squares, not the tilted Windows 8/10 mark.
+        assert_eq!(of(&os("windows", "", "10.0.26100.1"), "a", "a").glyph, "\u{e8e5}");
+        assert_eq!(of(&os("windows", "", "10.0.19045.1"), "a", "a").glyph, "\u{f17a}");
         assert_eq!(of(&os("windows", "", "10.0.19045.1"), "a", "a").glyph, g::WINDOWS_10);
         assert_eq!(of(&os("windows", "", "6.1.7601"), "a", "a").glyph, g::WINDOWS_7);
         assert_eq!(of(&os("windows", "", ""), "a", "a").glyph, g::WINDOWS_10);
@@ -273,9 +295,19 @@ mod tests {
         assert_eq!(pixel.glyph, g::GOOGLE);
         assert_eq!(pixel.label, "Google Pixel, Android 17");
         let tv = of(&os("android", "", "12"), "shield", "SHIELD Android TV");
-        assert_eq!((tv.glyph, tv.label.as_str()), (g::TV, "NVIDIA Shield, Android 12"));
+        assert_eq!((tv.glyph, tv.label.as_str()), (g::NVIDIA, "NVIDIA Shield, Android 12"));
         let tab = of(&os("android", "", "14"), "galaxy-tab-s9", "Galaxy Tab S9");
         assert_eq!((tab.glyph, tab.label.as_str()), (g::TABLET, "Samsung Galaxy Tab, Android 14"));
+        assert_eq!(of(&os("android", "", "14"), "oneplus-12", "OnePlus 12").glyph, g::ONEPLUS);
+        assert_eq!(of(&os("android", "", "14"), "redmi-note-13", "Redmi Note 13").glyph, g::XIAOMI);
+        assert_eq!(of(&os("android", "", "14"), "moto-g84", "moto g84").glyph, g::MOTOROLA);
+        assert_eq!(of(&os("android", "", "14"), "razr-50", "razr 50").glyph, g::MOTOROLA);
+        let huawei = of(&os("android", "", "12"), "huawei-p60", "HUAWEI P60");
+        assert_eq!((huawei.glyph, huawei.label.as_str()), (g::HUAWEI, "Huawei, Android 12"));
+        for (name, maker) in [("Honor 200", "Honor"), ("OPPO Reno12", "Oppo"), ("vivo X100", "vivo"), ("Nokia G42", "Nokia")] {
+            let i = of(&os("android", "", "14"), name, name);
+            assert_eq!((i.glyph, i.label), (g::ANDROID, format!("{maker}, Android 14")));
+        }
         let galaxy = of(&os("android", "", "15"), "sm-s918b", "SM-S918B");
         assert_eq!(galaxy.label, "Samsung Galaxy, Android 15");
         // A renamed phone gives nothing away and stays the robot.
@@ -287,7 +319,7 @@ mod tests {
         assert_eq!(of(&os("android", "", "14"), "aftab-phone", "aftab").glyph, g::ANDROID);
         assert_eq!(of(&os("android", "", "14"), "sm-phone", "SM phone").label, "Android 14");
         let fire = of(&os("android", "", "9"), "fire-tv-stick", "Fire TV Stick");
-        assert_eq!((fire.glyph, fire.label.as_str()), (g::TV, "Amazon Fire TV, Android 9"));
+        assert_eq!((fire.glyph, fire.label.as_str()), (g::AMAZON, "Amazon Fire TV, Android 9"));
         let ipad = of(&os("iOS", "", "18.1"), "ipad", "iPad");
         assert_eq!((ipad.glyph, ipad.label.as_str()), (g::TABLET, "iPad, iOS 18.1"));
         assert_eq!(of(&os("iOS", "", "18.1"), "phone", "localhost").glyph, g::PHONE);

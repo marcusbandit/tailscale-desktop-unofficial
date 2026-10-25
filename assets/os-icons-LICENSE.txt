@@ -8,6 +8,10 @@ draws. Its glyphs come from three sets, each under its own license, reproduced b
 
 The Nerd Fonts patching and packaging is under the MIT license.
 
+The phone and TV maker logos at U+100001 to U+100006 (Motorola, OnePlus, Xiaomi, Huawei,
+NVIDIA, Amazon) are converted from Simple Icons (https://simpleicons.org), released under
+CC0 1.0. The logos themselves are trademarks of their owners.
+
 ================================================================================
 Nerd Fonts: MIT License
 ================================================================================
