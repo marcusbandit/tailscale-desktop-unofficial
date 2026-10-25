@@ -47,6 +47,11 @@ pub mod icon {
     pub const TRASH: &str = "\u{f1f8}";
     pub const BAN: &str = "\u{f05e}";
     pub const CHECK: &str = "\u{f00c}";
+    pub const CLOCK: &str = "\u{f017}";
+    pub const EYE: &str = "\u{f06e}";
+    pub const KEY: &str = "\u{f084}";
+    pub const LOCK: &str = "\u{f023}";
+    pub const PLUG: &str = "\u{f1e6}";
 }
 
 pub fn os_icon(os: &str) -> &'static str {
@@ -120,7 +125,7 @@ pub fn paint_badge(
 ) {
     let ring = if b.online { GREEN } else { RING_OFF };
     let fill = if b.me { ME_FILL } else { CARD_HOVER };
-    let width = (r * 0.11).clamp(1.5, 3.0);
+    let width = (r * 0.09).clamp(1.5, 2.0);
     let shape = |rect_r: f32, f: Color32, s: Stroke| {
         if b.tagged {
             let rr = egui::Rect::from_center_size(center, egui::Vec2::splat(rect_r * 1.8));
@@ -132,14 +137,6 @@ pub fn paint_badge(
             painter.circle_stroke(center, rect_r, s);
         }
     };
-    if b.online {
-        // A soft outer glow makes "online" readable at a glance, even small.
-        shape(
-            r + width * 1.8,
-            Color32::TRANSPARENT,
-            Stroke::new(width * 2.2, GREEN.gamma_multiply(0.14 * alpha)),
-        );
-    }
     shape(
         r,
         fill.gamma_multiply(alpha),

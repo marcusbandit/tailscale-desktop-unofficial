@@ -335,7 +335,7 @@ impl Api {
         if status != 200 {
             return Err(match status {
                 401 | 403 => {
-                    "The credential cannot read devices. Give it Read on Devices Core.".into()
+                    "The credential cannot read devices. Make a new one with All - Read.".into()
                 }
                 _ => format!("Listing devices failed with {status}."),
             });

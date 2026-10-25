@@ -66,14 +66,17 @@ impl App {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 let side = ((ui.available_width() - WIDTH) / 2.0).max(24.0);
-                let top = (ui.available_height() * 0.14).clamp(24.0, 140.0);
+                // Center the page in the window, from its height last frame.
+                let id = ui.id().with("onboard-height");
+                let last: f32 = ui.ctx().data(|d| d.get_temp(id)).unwrap_or(0.0);
+                let top = ((ui.available_height() - last) / 2.0).clamp(24.0, 200.0);
                 ui.add_space(top);
-                ui.horizontal(|ui| {
+                let page = ui.horizontal(|ui| {
                     ui.add_space(side);
                     ui.vertical(|ui| {
                         ui.set_width(WIDTH.min(ui.available_width() - 24.0));
                         progress(ui, step);
-                        ui.add_space(28.0);
+                        ui.add_space(10.0);
                         match step {
                             WELCOME => self.page_welcome(ui),
                             OS_STEP => self.page_os(ui),
@@ -82,6 +85,12 @@ impl App {
                         }
                     });
                 });
+                let h = page.response.rect.height();
+                ui.ctx().data_mut(|d| d.insert_temp(id, h));
+                // A page of a new height is placed right on the next frame.
+                if (h - last).abs() > 1.0 {
+                    ui.ctx().request_repaint();
+                }
                 ui.add_space(40.0);
             });
     }
@@ -102,64 +111,100 @@ impl App {
     }
 
     fn page_welcome(&mut self, ui: &mut Ui) {
-        let (r, _) = ui.allocate_exact_size(vec2(44.0, 44.0), egui::Sense::hover());
-        paint_mark(ui.painter(), r);
-        ui.add_space(18.0);
+        ui.horizontal(|ui| {
+            let (r, _) = ui.allocate_exact_size(vec2(30.0, 30.0), egui::Sense::hover());
+            paint_mark(ui.painter(), r);
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new(crate::APP_NAME)
+                    .size(15.0)
+                    .family(egui::FontFamily::Name("strong".into()))
+                    .color(TEXT),
+            );
+        });
+        ui.add_space(22.0);
         heading(ui, "Your tailnet, on your desktop");
         body(
             ui,
-            "Every device you have on Tailscale, whether it is online right now, who can \
-             reach whom, and the tools to ping a device or send it files. It all comes \
-             straight from tailscaled on this machine.",
+            "See every device on your tailnet, which ones are online and who can reach \
+             whom. Ping a device or send it files in one click.",
         );
-        ui.add_space(26.0);
+        ui.add_space(24.0);
 
         // The user's own devices, drawn the way the app draws them everywhere.
         if let Some(s) = &self.snap {
             let mut nodes: Vec<_> = s.all().collect();
             nodes.sort_by_key(|n| display_order(n));
             nodes.truncate(8);
-            let slot = 74.0;
+            let slot = (ui.available_width() / nodes.len().max(1) as f32).min(84.0);
             let (rect, _) =
-                ui.allocate_exact_size(vec2(ui.available_width(), 92.0), egui::Sense::hover());
+                ui.allocate_exact_size(vec2(ui.available_width(), 104.0), egui::Sense::hover());
             let x0 = rect.center().x - slot * nodes.len() as f32 / 2.0 + slot / 2.0;
             for (i, n) in nodes.iter().enumerate() {
-                let c = egui::pos2(x0 + slot * i as f32, rect.top() + 30.0);
-                paint_badge(ui.painter(), c, 22.0, os_icon(&n.os), Badge::of(n), 1.0);
-                let name: String = if n.name.chars().count() > 10 {
-                    n.name.chars().take(9).chain(['…']).collect()
-                } else {
-                    n.name.clone()
-                };
-                ui.painter().text(
-                    egui::pos2(c.x, c.y + 34.0),
-                    egui::Align2::CENTER_TOP,
-                    name,
-                    egui::FontId::proportional(12.0),
-                    if n.online || n.is_self { TEXT } else { MUTED },
+                let c = egui::pos2(x0 + slot * i as f32, rect.top() + 26.0);
+                paint_badge(ui.painter(), c, 19.0, os_icon(&n.os), labelled(n), 1.0);
+                // Two lines of name before it shortens, and the full name on hover.
+                let color = if n.online || n.is_self { TEXT } else { MUTED };
+                let mut job = egui::text::LayoutJob::single_section(
+                    n.name.clone(),
+                    egui::TextFormat::simple(egui::FontId::proportional(11.5), color),
                 );
+                job.wrap = egui::text::TextWrapping {
+                    max_width: slot - 6.0,
+                    max_rows: 2,
+                    break_anywhere: false,
+                    overflow_character: Some('…'),
+                };
+                job.halign = Align::Center;
+                let g = ui.painter().layout_job(job);
+                let top = c.y + 28.0;
+                let name_h = g.size().y;
+                ui.painter().galley(egui::pos2(c.x, top), g, color);
+                if n.is_self {
+                    ui.painter().text(
+                        egui::pos2(c.x, top + name_h + 1.0),
+                        egui::Align2::CENTER_TOP,
+                        "this device",
+                        egui::FontId::proportional(10.5),
+                        ACCENT,
+                    );
+                }
+                let hit = egui::Rect::from_center_size(
+                    egui::pos2(c.x, c.y + 30.0),
+                    vec2(slot - 4.0, 104.0),
+                );
+                ui.interact(hit, ui.id().with(("welcome-node", i)), egui::Sense::hover())
+                    .on_hover_text(&n.name);
             }
-            ui.add_space(8.0);
             let online = s.all().filter(|n| n.online || n.is_self).count();
+            let tagged = nodes.iter().any(|n| !n.tags.is_empty());
             note(
                 ui,
                 &format!(
-                    "A green ring means the device is online. {online} of {} are right now.",
-                    s.all().count()
+                    "{online} of {} online.{}",
+                    s.all().count(),
+                    if tagged {
+                        " Squares are tagged devices."
+                    } else {
+                        ""
+                    }
                 ),
             );
         }
 
-        ui.add_space(18.0);
-        note(
-            ui,
-            &format!(
-                "{} is made independently and not by Tailscale. It only talks to the \
-                 Tailscale already running on this machine.",
-                crate::APP_NAME
-            ),
+        ui.add_space(40.0);
+        ui.add(
+            egui::Label::new(
+                RichText::new(
+                    "Made independently, not by Tailscale. Everything comes from the \
+                     Tailscale already running on this machine.",
+                )
+                .size(11.0)
+                .color(FAINT.gamma_multiply(0.85)),
+            )
+            .wrap(),
         );
-        ui.add_space(24.0);
+        ui.add_space(22.0);
         let act = Cell::new(None);
         buttons(
             ui,
@@ -169,7 +214,7 @@ impl App {
                 }
             },
             |ui| {
-                if ui.button("Skip the tour").clicked() {
+                if quiet_button(ui, "Skip the tour").clicked() {
                     act.set(Some(Act::Close));
                 }
             },
@@ -178,18 +223,11 @@ impl App {
     }
 
     fn page_os(&mut self, ui: &mut Ui) {
-        heading(ui, "Know what every device runs");
-        let me = self
-            .snap
-            .as_ref()
-            .map(|s| s.me.name.clone())
-            .unwrap_or_default();
+        heading(ui, "See what every device runs");
         body(
             ui,
-            &format!(
-                "{me} already knows its own distro and kernel. For your other devices, \
-                 Tailscale only shares that through its web API."
-            ),
+            "Other devices need one extra permission from Tailscale before they share \
+             what they run.",
         );
         ui.add_space(20.0);
 
@@ -205,22 +243,36 @@ impl App {
                 preview_row(ui, &s.me, &self.os_of(&s.me), None);
                 if let Some(p) = peer {
                     divider(ui);
-                    let hint = (!self.api.connected).then_some("full version after setup");
+                    let hint = (!self.api.connected).then_some("available after setup");
                     preview_row(ui, p, &self.os_of(p), hint);
                 }
             });
         }
 
-        ui.add_space(22.0);
+        ui.add_space(16.0);
         ui.label(RichText::new("What it takes").strong().size(15.0));
         ui.add_space(6.0);
-        for line in [
-            "One credential, made once in the Tailscale admin console. About a minute.",
-            "It can read device details and nothing else. It can't change your tailnet.",
-            "It is kept in your keyring, and Disconnect in the sidebar removes it.",
+        for (glyph, line) in [
+            (
+                icon::CLOCK,
+                "An access token, called a trust credential in the admin console. \
+                 Takes about a minute.",
+            ),
+            (
+                icon::EYE,
+                "It can read your devices and settings, and it can't change anything.",
+            ),
+            (icon::KEY, "It is stored in your keyring."),
+            (
+                icon::PLUG,
+                "Remove it any time with Disconnect in the sidebar.",
+            ),
         ] {
             ui.horizontal_top(|ui| {
-                ui.label(RichText::new(icon::CHECK).color(GREEN));
+                ui.add_sized(
+                    vec2(20.0, 18.0),
+                    egui::Label::new(RichText::new(glyph).color(MUTED)),
+                );
                 ui.add(egui::Label::new(RichText::new(line).color(MUTED)).wrap());
             });
             ui.add_space(2.0);
@@ -241,7 +293,7 @@ impl App {
                 if ui.button("Back").clicked() {
                     act.set(Some(Act::Go(WELCOME)));
                 }
-                if !connected && ui.button("Skip for now").clicked() {
+                if !connected && quiet_button(ui, "Skip for now").clicked() {
                     act.set(Some(Act::Go(DONE)));
                 }
             },
@@ -268,8 +320,7 @@ impl App {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("In the admin console").strong());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui
-                        .button(format!("{}   Open admin console", icon::GLOBE))
+                    if primary_button(ui, &format!("{}   Open admin console", icon::GLOBE))
                         .clicked()
                     {
                         ui.ctx()
@@ -328,7 +379,7 @@ impl App {
                 if ui.button("Back").clicked() {
                     act.set(Some(Act::Go(OS_STEP)));
                 }
-                if ui.button("Skip for now").clicked() {
+                if quiet_button(ui, "Skip for now").clicked() {
                     act.set(Some(Act::Go(DONE)));
                 }
             },
@@ -442,9 +493,28 @@ impl App {
     }
 }
 
-/// Where you are in the walkthrough: one bar per page, filled up to this one.
+/// A plain text button for the way out of a page, so the primary action leads.
+fn quiet_button(ui: &mut Ui, text: &str) -> egui::Response {
+    ui.scope(|ui| {
+        // Muted at rest, the normal text color on hover, so it still reads as a button.
+        ui.visuals_mut().widgets.inactive.fg_stroke.color = MUTED;
+        ui.add(egui::Button::new(text).frame(false))
+    })
+    .inner
+}
+
+/// Where you are in the walkthrough: one bar per page, filled up to this one,
+/// with the count under it.
 fn progress(ui: &mut Ui, step: usize) {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 4.0), egui::Sense::hover());
+    let (all, _) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), egui::Sense::hover());
+    let rect = egui::Rect::from_min_size(all.min, vec2(all.width(), 4.0));
+    ui.painter().text(
+        egui::pos2(rect.right(), rect.bottom() + 5.0),
+        egui::Align2::RIGHT_TOP,
+        format!("{} of {STEPS}", step + 1),
+        egui::FontId::proportional(11.5),
+        FAINT,
+    );
     let gap = 6.0;
     let w = (rect.width() - gap * (STEPS - 1) as f32) / STEPS as f32;
     for i in 0..STEPS {
@@ -497,6 +567,15 @@ fn divider(ui: &mut Ui) {
     ui.add_space(9.0);
 }
 
+/// A device's badge where its name is labelled: the label marks this device,
+/// so the badge drops its fill.
+fn labelled(n: &crate::ts::Node) -> Badge {
+    Badge {
+        me: false,
+        ..Badge::of(n)
+    }
+}
+
 /// A device as the list shows it: ring, name, and what it runs.
 fn preview_row(ui: &mut Ui, n: &crate::ts::Node, os: &OsInfo, hint: Option<&str>) {
     ui.horizontal(|ui| {
@@ -506,21 +585,31 @@ fn preview_row(ui: &mut Ui, n: &crate::ts::Node, os: &OsInfo, hint: Option<&str>
             r.center(),
             15.0,
             os_icon(&n.os),
-            Badge::of(n),
+            labelled(n),
             1.0,
         );
         ui.add_space(8.0);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
-            ui.label(RichText::new(&n.name).strong());
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
+                ui.label(RichText::new(&n.name).strong());
+                if n.is_self {
+                    ui.label(RichText::new("this device").size(11.5).color(ACCENT));
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 12.0;
                 ui.label(RichText::new(os.title()).size(12.5).color(MUTED));
                 if let Some(d) = os.detail() {
                     ui.label(RichText::new(d).size(12.5).color(FAINT));
                 }
+                // What setup adds, shown as locked until then.
                 if let Some(h) = hint {
-                    ui.label(RichText::new(h).size(12.5).italics().color(FAINT));
+                    ui.label(
+                        RichText::new(format!("{}   {h}", icon::LOCK))
+                            .size(12.5)
+                            .color(MUTED),
+                    );
                 }
             });
         });
