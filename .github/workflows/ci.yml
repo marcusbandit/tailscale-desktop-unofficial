@@ -51,9 +51,10 @@ jobs:
         run: |
           cargo build --locked
           ./target/debug/tailscale-desktop-unofficial & pid=$!
-          for _ in $(seq 60); do [ -f "$TSDU_SHOT" ] && break; sleep 1; done
+          # The app closes itself once the PNG is written.
+          for _ in $(seq 60); do kill -0 $pid 2>/dev/null || break; sleep 1; done
           kill $pid 2>/dev/null || true
-          file "$TSDU_SHOT"
+          file "$TSDU_SHOT" | grep PNG
       - if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
