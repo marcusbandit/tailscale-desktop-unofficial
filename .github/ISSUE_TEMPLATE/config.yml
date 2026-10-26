@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Problem with Tailscale itself
+    url: https://github.com/tailscale/tailscale/issues
+    about: If the official Tailscale client has the same problem, report it to Tailscale. This app is unofficial.
+  - name: How to file a good issue
+    url: https://github.com/marcusbandit/tailscale-desktop-unofficial/blob/main/CONTRIBUTING.md#filing-an-issue
+    about: What to include, and what to keep private.
