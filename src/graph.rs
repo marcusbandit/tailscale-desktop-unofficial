@@ -81,8 +81,16 @@ const OUTER_STEP: f32 = 105.0;
 /// the inner ring in `order`, offline peers on the outer ring between them.
 fn slots(center: &[bool], online: &[bool], order: &[usize]) -> Vec<Vec2> {
     let mut out = vec![Vec2::ZERO; center.len()];
-    let inner: Vec<usize> = order.iter().copied().filter(|&i| !center[i] && online[i]).collect();
-    let outer: Vec<usize> = order.iter().copied().filter(|&i| !center[i] && !online[i]).collect();
+    let inner: Vec<usize> = order
+        .iter()
+        .copied()
+        .filter(|&i| !center[i] && online[i])
+        .collect();
+    let outer: Vec<usize> = order
+        .iter()
+        .copied()
+        .filter(|&i| !center[i] && !online[i])
+        .collect();
     let r1 = ring_radius(inner.len());
     let place = |list: &[usize], r: f32, offset: f32, out: &mut Vec<Vec2>| {
         for (k, &i) in list.iter().enumerate() {
@@ -254,7 +262,10 @@ pub fn show(
     if !st.manual && !ids.is_empty() && st.dragging.is_none() {
         // Fit into the canvas above the legend strip, with room for the labels that
         // hang under each node and spread past it sideways.
-        let avail = vec2(rect.width() - 60.0, rect.height() - TITLE_H - LEGEND_H - 24.0);
+        let avail = vec2(
+            rect.width() - 60.0,
+            rect.height() - TITLE_H - LEGEND_H - 24.0,
+        );
         // The rings are fitted, not where nodes happen to be mid-glide.
         let mut tb = Rect::NOTHING;
         for t in &target {
@@ -352,7 +363,11 @@ pub fn show(
     let inner_n = (0..ids.len()).filter(|&i| !center[i] && online[i]).count();
     if inner_n > 0 {
         let r1 = ring_radius(inner_n);
-        painter.circle_stroke(origin, r1 * zoom, Stroke::new(1.0, BORDER.gamma_multiply(0.8)));
+        painter.circle_stroke(
+            origin,
+            r1 * zoom,
+            Stroke::new(1.0, BORDER.gamma_multiply(0.8)),
+        );
     }
 
     let focus = st.hovered.clone().or(selected.clone());
@@ -520,7 +535,12 @@ pub fn show(
             (rect.bottom() - r.bottom()).min(0.0),
         ));
         painter.rect_filled(r, RADIUS, SURFACE);
-        painter.rect_stroke(r, RADIUS, Stroke::new(1.0, BORDER), egui::StrokeKind::Inside);
+        painter.rect_stroke(
+            r,
+            RADIUS,
+            Stroke::new(1.0, BORDER),
+            egui::StrokeKind::Inside,
+        );
         painter.galley(r.min + vec2(10.0, 8.0), galley, TEXT);
     }
 
@@ -575,14 +595,20 @@ fn legend(painter: &egui::Painter, rect: Rect) {
         (
             22.0,
             Box::new(|c: Pos2| {
-                painter.line_segment([c - vec2(11.0, 0.0), c + vec2(11.0, 0.0)], Stroke::new(1.4, MUTED));
+                painter.line_segment(
+                    [c - vec2(11.0, 0.0), c + vec2(11.0, 0.0)],
+                    Stroke::new(1.4, MUTED),
+                );
             }),
             "Both ways",
         ),
         (
             22.0,
             Box::new(|c: Pos2| {
-                painter.line_segment([c - vec2(11.0, 0.0), c + vec2(11.0, 0.0)], Stroke::new(1.4, EDGE));
+                painter.line_segment(
+                    [c - vec2(11.0, 0.0), c + vec2(11.0, 0.0)],
+                    Stroke::new(1.4, EDGE),
+                );
                 arrow(painter, c + vec2(6.0, 0.0), vec2(1.0, 0.0), AMBER, 8.0);
             }),
             "One way",
@@ -590,7 +616,10 @@ fn legend(painter: &egui::Painter, rect: Rect) {
         (
             10.0,
             Box::new(|c: Pos2| {
-                painter.line_segment([c - vec2(0.0, 6.0), c + vec2(0.0, 6.0)], Stroke::new(2.0, RED));
+                painter.line_segment(
+                    [c - vec2(0.0, 6.0), c + vec2(0.0, 6.0)],
+                    Stroke::new(2.0, RED),
+                );
             }),
             "Blocked",
         ),
@@ -637,7 +666,11 @@ fn legend(painter: &egui::Painter, rect: Rect) {
     let widths: Vec<f32> = items
         .iter()
         .map(|(mw, _, label)| {
-            mw + 6.0 + painter.layout_no_wrap(label.to_string(), font.clone(), MUTED).size().x
+            mw + 6.0
+                + painter
+                    .layout_no_wrap(label.to_string(), font.clone(), MUTED)
+                    .size()
+                    .x
         })
         .collect();
     let gap = sp::L + 4.0;
@@ -647,7 +680,12 @@ fn legend(painter: &egui::Painter, rect: Rect) {
         vec2(total, 32.0),
     );
     painter.rect_filled(strip, RADIUS, SURFACE.gamma_multiply(0.94));
-    painter.rect_stroke(strip, RADIUS, Stroke::new(1.0, BORDER), egui::StrokeKind::Inside);
+    painter.rect_stroke(
+        strip,
+        RADIUS,
+        Stroke::new(1.0, BORDER),
+        egui::StrokeKind::Inside,
+    );
     let mut x = strip.left() + sp::L;
     let y = strip.center().y;
     for ((mw, mark, label), w) in items.iter().zip(widths) {

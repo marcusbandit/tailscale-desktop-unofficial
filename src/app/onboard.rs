@@ -238,7 +238,14 @@ impl App {
                 .or(s.peers.first());
             panel(ui, |ui| {
                 let kernel = self.settings.show_kernel;
-                preview_row(ui, &s.me, &self.mask.name(&s.me), &self.os_of(&s.me), kernel, None);
+                preview_row(
+                    ui,
+                    &s.me,
+                    &self.mask.name(&s.me),
+                    &self.os_of(&s.me),
+                    kernel,
+                    None,
+                );
                 if let Some(p) = peer {
                     divider(ui);
                     let hint = (!self.api.connected).then_some("available after setup");
@@ -261,10 +268,7 @@ impl App {
                 "It can read your devices and settings, and it can't change anything.",
             ),
             (icon::KEY, "It is stored in your keyring."),
-            (
-                icon::PLUG,
-                "Remove it any time from Settings.",
-            ),
+            (icon::PLUG, "Remove it any time from Settings."),
         ] {
             ui.horizontal_top(|ui| {
                 ui.add_sized(
@@ -417,7 +421,14 @@ impl App {
                 let last = nodes.len().saturating_sub(1);
                 for (i, n) in nodes.iter().enumerate() {
                     let name = self.mask.name(n);
-                    preview_row(ui, n, &name, &self.os_of(n), self.settings.show_kernel, None);
+                    preview_row(
+                        ui,
+                        n,
+                        &name,
+                        &self.os_of(n),
+                        self.settings.show_kernel,
+                        None,
+                    );
                     if i != last {
                         divider(ui);
                     }

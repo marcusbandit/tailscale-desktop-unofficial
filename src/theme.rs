@@ -144,7 +144,6 @@ fn ink_rect(painter: &egui::Painter, glyph: &str, size: f32) -> egui::Rect {
     ink
 }
 
-
 /// Paints one icon glyph with its ink centered on `center`. Text layout centers the
 /// advance box, and Nerd Font glyphs sit off center inside theirs.
 pub fn paint_icon(
@@ -300,7 +299,9 @@ pub fn install(ctx: &egui::Context) {
     // without a Nerd Font and include logos newer than the system's.
     fonts.font_data.insert(
         "os-icons".to_owned(),
-        Arc::new(FontData::from_static(include_bytes!("../assets/os-icons.ttf"))),
+        Arc::new(FontData::from_static(include_bytes!(
+            "../assets/os-icons.ttf"
+        ))),
     );
     let list = fonts.families.entry(FontFamily::Proportional).or_default();
     list.insert(list.len().min(1), "os-icons".to_owned());

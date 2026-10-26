@@ -483,8 +483,8 @@ pub fn enable_ip_forwarding(prefs: &Prefs) -> Result<(), String> {
     );
     run_as_root(&["sh", "-c", &script])?;
     // The sudo fallback can't always report how it went, so look.
-    let on = std::fs::read_to_string("/proc/sys/net/ipv4/ip_forward")
-        .is_ok_and(|v| v.trim() == "1");
+    let on =
+        std::fs::read_to_string("/proc/sys/net/ipv4/ip_forward").is_ok_and(|v| v.trim() == "1");
     if !on {
         return Err("IP forwarding is still off".into());
     }

@@ -6,9 +6,9 @@ use eframe::egui::{self, Align, Layout, RichText, Ui, UiBuilder, vec2};
 use serde_json::json;
 
 use super::{App, Onboarding, card_frame, onboard, primary_button, toggle};
-use crate::widgets::{self, Btn};
 use crate::theme::*;
 use crate::ts::{self, Node, Snapshot};
+use crate::widgets::{self, Btn};
 
 impl App {
     pub(super) fn settings_view(&mut self, ui: &mut Ui) {
@@ -27,22 +27,21 @@ impl App {
 
     fn settings_column(&mut self, ui: &mut Ui) {
         widgets::page_title(ui, "Settings", "", |_| {});
-            // Prefs can change while Tailscale is off, ready for when it is back.
-            match self.snap.clone() {
-                Some(s) => self.routing(ui, &s),
-                None => group(ui, "This device", |ui| {
-                    ui.label(
-                        RichText::new("Routing settings show once tailscaled is running.")
-                            .color(MUTED),
-                    );
-                }),
-            }
-            self.privacy(ui);
-            self.list_options(ui);
-            self.os_versions(ui);
-            self.help(ui);
-            self.about(ui);
-            ui.add_space(sp::XL);
+        // Prefs can change while Tailscale is off, ready for when it is back.
+        match self.snap.clone() {
+            Some(s) => self.routing(ui, &s),
+            None => group(ui, "This device", |ui| {
+                ui.label(
+                    RichText::new("Routing settings show once tailscaled is running.").color(MUTED),
+                );
+            }),
+        }
+        self.privacy(ui);
+        self.list_options(ui);
+        self.os_versions(ui);
+        self.help(ui);
+        self.about(ui);
+        ui.add_space(sp::XL);
     }
 
     fn routing(&mut self, ui: &mut Ui, s: &Snapshot) {
@@ -250,7 +249,11 @@ impl App {
                     },
                 );
                 if let Some(e) = &self.api.error {
-                    ui.label(RichText::new(self.mask.external(e)).size(ty::SMALL).color(FAINT));
+                    ui.label(
+                        RichText::new(self.mask.external(e))
+                            .size(ty::SMALL)
+                            .color(FAINT),
+                    );
                 }
             } else {
                 row(
@@ -336,12 +339,7 @@ fn group(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui)) {
 }
 
 /// A setting: its name with a line on what it does, and its control on the right.
-fn row(
-    ui: &mut Ui,
-    label: impl Into<egui::WidgetText>,
-    hint: &str,
-    control: impl FnOnce(&mut Ui),
-) {
+fn row(ui: &mut Ui, label: impl Into<egui::WidgetText>, hint: &str, control: impl FnOnce(&mut Ui)) {
     let control_w = 220.0;
     let left = ui.cursor().left();
     let full = ui.available_width();

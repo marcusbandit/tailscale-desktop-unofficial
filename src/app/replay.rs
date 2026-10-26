@@ -174,11 +174,7 @@ fn step_row(ui: &mut Ui, i: usize, text: &str, on: bool, progress: Option<f32>) 
         p.rect_filled(
             rect,
             8.0,
-            if on {
-                HOVER
-            } else {
-                HOVER.gamma_multiply(0.5)
-            },
+            if on { HOVER } else { HOVER.gamma_multiply(0.5) },
         );
     }
     let c = pos2(rect.left() + 17.0, rect.top() + 14.0);

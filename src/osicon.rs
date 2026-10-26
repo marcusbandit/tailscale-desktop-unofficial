@@ -259,15 +259,26 @@ mod tests {
 
     #[test]
     fn distros_get_their_own_logo() {
-        let arch = of(&os("linux", "arch", "7.2.11-arch1-1"), "banditbox", "banditbox");
+        let arch = of(
+            &os("linux", "arch", "7.2.11-arch1-1"),
+            "banditbox",
+            "banditbox",
+        );
         assert_eq!(arch.glyph, "\u{f303}");
         assert_eq!(arch.label, "Arch Linux");
         assert_eq!(of(&os("linux", "cachyos", ""), "a", "a").glyph, "\u{f385}");
-        assert_eq!(of(&os("linux", "opensuse-tumbleweed", ""), "a", "a").glyph, "\u{f37d}");
+        assert_eq!(
+            of(&os("linux", "opensuse-tumbleweed", ""), "a", "a").glyph,
+            "\u{f37d}"
+        );
         // A distro without a logo, or none known yet, is Tux.
         assert_eq!(of(&os("linux", "gokrazy", ""), "a", "a").glyph, g::TUX);
         assert_eq!(of(&os("linux", "", ""), "a", "a").glyph, g::TUX);
-        let pi = of(&os("linux", "ubuntu", "7.0.0-1020-raspi"), "diablo-pi", "diablo-pi");
+        let pi = of(
+            &os("linux", "ubuntu", "7.0.0-1020-raspi"),
+            "diablo-pi",
+            "diablo-pi",
+        );
         assert_eq!(pi.glyph, "\u{f31b}");
         assert_eq!(pi.label, "Ubuntu on a Raspberry Pi");
         let rpi = of(&os("linux", "Raspbian", "6.6.51+rpt-rpi-v8"), "pi", "pi");
@@ -282,10 +293,22 @@ mod tests {
     #[test]
     fn windows_marks_follow_the_build() {
         // The flat four squares, not the tilted Windows 8/10 mark.
-        assert_eq!(of(&os("windows", "", "10.0.26100.1"), "a", "a").glyph, "\u{e8e5}");
-        assert_eq!(of(&os("windows", "", "10.0.19045.1"), "a", "a").glyph, "\u{f17a}");
-        assert_eq!(of(&os("windows", "", "10.0.19045.1"), "a", "a").glyph, g::WINDOWS_10);
-        assert_eq!(of(&os("windows", "", "6.1.7601"), "a", "a").glyph, g::WINDOWS_7);
+        assert_eq!(
+            of(&os("windows", "", "10.0.26100.1"), "a", "a").glyph,
+            "\u{e8e5}"
+        );
+        assert_eq!(
+            of(&os("windows", "", "10.0.19045.1"), "a", "a").glyph,
+            "\u{f17a}"
+        );
+        assert_eq!(
+            of(&os("windows", "", "10.0.19045.1"), "a", "a").glyph,
+            g::WINDOWS_10
+        );
+        assert_eq!(
+            of(&os("windows", "", "6.1.7601"), "a", "a").glyph,
+            g::WINDOWS_7
+        );
         assert_eq!(of(&os("windows", "", ""), "a", "a").glyph, g::WINDOWS_10);
     }
 
@@ -295,34 +318,84 @@ mod tests {
         assert_eq!(pixel.glyph, g::GOOGLE);
         assert_eq!(pixel.label, "Google Pixel, Android 17");
         let tv = of(&os("android", "", "12"), "shield", "SHIELD Android TV");
-        assert_eq!((tv.glyph, tv.label.as_str()), (g::NVIDIA, "NVIDIA Shield, Android 12"));
+        assert_eq!(
+            (tv.glyph, tv.label.as_str()),
+            (g::NVIDIA, "NVIDIA Shield, Android 12")
+        );
         let tab = of(&os("android", "", "14"), "galaxy-tab-s9", "Galaxy Tab S9");
-        assert_eq!((tab.glyph, tab.label.as_str()), (g::TABLET, "Samsung Galaxy Tab, Android 14"));
-        assert_eq!(of(&os("android", "", "14"), "oneplus-12", "OnePlus 12").glyph, g::ONEPLUS);
-        assert_eq!(of(&os("android", "", "14"), "redmi-note-13", "Redmi Note 13").glyph, g::XIAOMI);
-        assert_eq!(of(&os("android", "", "14"), "moto-g84", "moto g84").glyph, g::MOTOROLA);
-        assert_eq!(of(&os("android", "", "14"), "razr-50", "razr 50").glyph, g::MOTOROLA);
+        assert_eq!(
+            (tab.glyph, tab.label.as_str()),
+            (g::TABLET, "Samsung Galaxy Tab, Android 14")
+        );
+        assert_eq!(
+            of(&os("android", "", "14"), "oneplus-12", "OnePlus 12").glyph,
+            g::ONEPLUS
+        );
+        assert_eq!(
+            of(&os("android", "", "14"), "redmi-note-13", "Redmi Note 13").glyph,
+            g::XIAOMI
+        );
+        assert_eq!(
+            of(&os("android", "", "14"), "moto-g84", "moto g84").glyph,
+            g::MOTOROLA
+        );
+        assert_eq!(
+            of(&os("android", "", "14"), "razr-50", "razr 50").glyph,
+            g::MOTOROLA
+        );
         let huawei = of(&os("android", "", "12"), "huawei-p60", "HUAWEI P60");
-        assert_eq!((huawei.glyph, huawei.label.as_str()), (g::HUAWEI, "Huawei, Android 12"));
-        for (name, maker) in [("Honor 200", "Honor"), ("OPPO Reno12", "Oppo"), ("vivo X100", "vivo"), ("Nokia G42", "Nokia")] {
+        assert_eq!(
+            (huawei.glyph, huawei.label.as_str()),
+            (g::HUAWEI, "Huawei, Android 12")
+        );
+        for (name, maker) in [
+            ("Honor 200", "Honor"),
+            ("OPPO Reno12", "Oppo"),
+            ("vivo X100", "vivo"),
+            ("Nokia G42", "Nokia"),
+        ] {
             let i = of(&os("android", "", "14"), name, name);
-            assert_eq!((i.glyph, i.label), (g::ANDROID, format!("{maker}, Android 14")));
+            assert_eq!(
+                (i.glyph, i.label),
+                (g::ANDROID, format!("{maker}, Android 14"))
+            );
         }
         let galaxy = of(&os("android", "", "15"), "sm-s918b", "SM-S918B");
         assert_eq!(galaxy.label, "Samsung Galaxy, Android 15");
         // A renamed phone gives nothing away and stays the robot.
         let renamed = of(&os("android", "", "17"), "01x-engineer", "0,1x Engineer");
-        assert_eq!((renamed.glyph, renamed.label.as_str()), (g::ANDROID, "Android 17"));
+        assert_eq!(
+            (renamed.glyph, renamed.label.as_str()),
+            (g::ANDROID, "Android 17")
+        );
         // "tab" inside another word doesn't make a tablet, nor "aft" a Fire TV,
         // nor initials SM a Samsung.
-        assert_eq!(of(&os("android", "", "17"), "stable", "stable").glyph, g::ANDROID);
-        assert_eq!(of(&os("android", "", "14"), "aftab-phone", "aftab").glyph, g::ANDROID);
-        assert_eq!(of(&os("android", "", "14"), "sm-phone", "SM phone").label, "Android 14");
+        assert_eq!(
+            of(&os("android", "", "17"), "stable", "stable").glyph,
+            g::ANDROID
+        );
+        assert_eq!(
+            of(&os("android", "", "14"), "aftab-phone", "aftab").glyph,
+            g::ANDROID
+        );
+        assert_eq!(
+            of(&os("android", "", "14"), "sm-phone", "SM phone").label,
+            "Android 14"
+        );
         let fire = of(&os("android", "", "9"), "fire-tv-stick", "Fire TV Stick");
-        assert_eq!((fire.glyph, fire.label.as_str()), (g::AMAZON, "Amazon Fire TV, Android 9"));
+        assert_eq!(
+            (fire.glyph, fire.label.as_str()),
+            (g::AMAZON, "Amazon Fire TV, Android 9")
+        );
         let ipad = of(&os("iOS", "", "18.1"), "ipad", "iPad");
-        assert_eq!((ipad.glyph, ipad.label.as_str()), (g::TABLET, "iPad, iOS 18.1"));
-        assert_eq!(of(&os("iOS", "", "18.1"), "phone", "localhost").glyph, g::PHONE);
+        assert_eq!(
+            (ipad.glyph, ipad.label.as_str()),
+            (g::TABLET, "iPad, iOS 18.1")
+        );
+        assert_eq!(
+            of(&os("iOS", "", "18.1"), "phone", "localhost").glyph,
+            g::PHONE
+        );
         assert_eq!(of(&os("macOS", "", "15.6"), "mac", "mac").glyph, g::APPLE);
     }
 }
