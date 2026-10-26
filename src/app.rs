@@ -1529,7 +1529,12 @@ impl App {
             if state == "NeedsLogin" {
                 ui.label(RichText::new("Logged out").heading());
                 ui.label(
-                    RichText::new("Run `tailscale login` to sign this device in.").color(MUTED),
+                    RichText::new(if cfg!(target_os = "linux") {
+                        "Run `tailscale login` to sign this device in."
+                    } else {
+                        "Sign in from the Tailscale app."
+                    })
+                    .color(MUTED),
                 );
             } else {
                 ui.label(RichText::new("Tailscale is off").heading());
