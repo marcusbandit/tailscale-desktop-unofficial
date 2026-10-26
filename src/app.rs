@@ -1160,12 +1160,7 @@ impl App {
                 match self.snap.clone() {
                     Some(s) => self.status(ui, &s),
                     None => {
-                        let label = if cfg!(target_os = "linux") {
-                            "Start tailscaled"
-                        } else {
-                            "Open Tailscale"
-                        };
-                        let b = Btn::new(label).glyph(icon::POWER).primary();
+                        let b = Btn::new(ts::START_SHORT).glyph(icon::POWER).primary();
                         if ui.add(b).clicked() {
                             self.act(&ctx, "daemon", || {
                                 ts::start_daemon().map(|_| ts::STARTED.into())

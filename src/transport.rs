@@ -80,28 +80,62 @@ pub fn connect(_timeout: Duration) -> Result<Link, String> {
 #[cfg(target_os = "macos")]
 const SOCKET: &str = "/var/run/tailscaled.socket";
 
+/// The app's port and token, found once and kept until a connect to them fails,
+/// so a poll doesn't run lsof every time.
+#[cfg(target_os = "macos")]
+static APP_PORT: std::sync::Mutex<Option<(u16, String)>> = std::sync::Mutex::new(None);
+
 /// The Tailscale app serves the LocalAPI on a localhost port and proves the
 /// caller is the same user with a token. The open-source tailscaled from
-/// Homebrew uses a unix socket instead.
+/// Homebrew uses a unix socket instead, so that is the fallback.
 #[cfg(target_os = "macos")]
 pub fn connect(timeout: Duration) -> Result<Link, String> {
-    if let Some((port, token)) = app_port_and_token() {
+    let cached = APP_PORT.lock().ok().and_then(|g| g.clone());
+    let fresh = || {
+        let found = app_port_and_token();
+        if let Ok(mut g) = APP_PORT.lock() {
+            *g = found.clone();
+        }
+        found
+    };
+    let mut app_err = None;
+    // A cached port can go stale when the app restarts; look again once.
+    for found in [cached.clone(), None] {
+        let Some((port, token)) = found.or_else(fresh) else {
+            break;
+        };
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-        let s = std::net::TcpStream::connect_timeout(&addr, timeout).map_err(unreachable)?;
-        s.set_read_timeout(Some(timeout)).ok();
-        s.set_write_timeout(Some(timeout)).ok();
-        return Ok(Link {
-            conn: Box::new(s),
-            auth: Some(format!("Basic {}", base64(format!(":{token}").as_bytes()))),
-        });
+        match std::net::TcpStream::connect_timeout(&addr, timeout) {
+            Ok(s) => {
+                s.set_read_timeout(Some(timeout)).ok();
+                s.set_write_timeout(Some(timeout)).ok();
+                return Ok(Link {
+                    conn: Box::new(s),
+                    auth: Some(format!("Basic {}", base64(format!(":{token}").as_bytes()))),
+                });
+            }
+            Err(e) => {
+                if let Ok(mut g) = APP_PORT.lock() {
+                    *g = None;
+                }
+                app_err = Some(e);
+                if cached.is_none() {
+                    break;
+                }
+            }
+        }
     }
-    let s = std::os::unix::net::UnixStream::connect(SOCKET).map_err(unreachable)?;
-    s.set_read_timeout(Some(timeout)).ok();
-    s.set_write_timeout(Some(timeout)).ok();
-    Ok(Link {
-        conn: Box::new(s),
-        auth: None,
-    })
+    match std::os::unix::net::UnixStream::connect(SOCKET) {
+        Ok(s) => {
+            s.set_read_timeout(Some(timeout)).ok();
+            s.set_write_timeout(Some(timeout)).ok();
+            Ok(Link {
+                conn: Box::new(s),
+                auth: None,
+            })
+        }
+        Err(e) => Err(unreachable(app_err.unwrap_or(e))),
+    }
 }
 
 /// The App Store app's sandboxed extension holds open a file named

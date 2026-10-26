@@ -28,6 +28,31 @@ pub fn local_api(
     body: Option<&[u8]>,
     timeout: Duration,
 ) -> Result<Response, String> {
+    // A named pipe has no read timeout, so wait on a helper thread instead and
+    // give up on it when tailscaled stalls.
+    #[cfg(windows)]
+    {
+        let (method, path) = (method.to_owned(), path.to_owned());
+        let body = body.map(<[u8]>::to_vec);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            tx.send(request(&method, &path, body.as_deref(), timeout))
+                .ok();
+        });
+        return rx
+            .recv_timeout(timeout)
+            .unwrap_or_else(|_| Err("Tailscale did not answer in time".into()));
+    }
+    #[allow(unreachable_code)]
+    request(method, path, body, timeout)
+}
+
+fn request(
+    method: &str,
+    path: &str,
+    body: Option<&[u8]>,
+    timeout: Duration,
+) -> Result<Response, String> {
     let body = body.unwrap_or_default();
     let mut conn = send(method, path, body.len() as u64, timeout)?;
     conn.write_all(body).map_err(|e| e.to_string())?;
@@ -52,7 +77,9 @@ fn send(method: &str, path: &str, len: u64, timeout: Duration) -> Result<Box<dyn
     Ok(conn)
 }
 
-/// Reads the reply's status and headers, then copies the body into `out`.
+/// Reads the reply's status and headers, then copies the body into `out`. A
+/// body shorter than its Content-Length means the connection dropped, which is
+/// an error, never a short success.
 fn reply(conn: Box<dyn Conn>, out: &mut dyn Write) -> Result<u16, String> {
     let mut r = BufReader::new(conn);
     let mut line = String::new();
@@ -62,14 +89,23 @@ fn reply(conn: Box<dyn Conn>, out: &mut dyn Write) -> Result<u16, String> {
         .nth(1)
         .and_then(|s| s.parse().ok())
         .ok_or("malformed reply from tailscaled")?;
+    let mut length: Option<u64> = None;
     loop {
         line.clear();
         let n = r.read_line(&mut line).map_err(|e| e.to_string())?;
         if n == 0 || line == "\r\n" || line == "\n" {
             break;
         }
+        if let Some((k, v)) = line.split_once(':') {
+            if k.trim().eq_ignore_ascii_case("content-length") {
+                length = v.trim().parse().ok();
+            }
+        }
     }
-    std::io::copy(&mut r, out).map_err(|e| e.to_string())?;
+    let got = std::io::copy(&mut r, out).map_err(|e| e.to_string())?;
+    if let Some(want) = length.filter(|w| *w != got) {
+        return Err(format!("the reply was cut off at {got} of {want} bytes"));
+    }
     Ok(status)
 }
 
@@ -480,6 +516,13 @@ pub const STARTED: &str = if cfg!(target_os = "linux") {
     "Opened Tailscale"
 };
 
+/// The short label for the same action, in the header.
+pub const START_SHORT: &str = if cfg!(target_os = "linux") {
+    "Start tailscaled"
+} else {
+    "Open Tailscale"
+};
+
 /// What the button on the "can't reach" screen says, per OS.
 pub const START_LABEL: &str = if cfg!(target_os = "linux") {
     "Start tailscaled (asks for sudo)"
@@ -500,7 +543,11 @@ pub fn start_daemon() -> Result<(), String> {
         return if ok {
             Ok(())
         } else {
-            Err("Tailscale is not installed. Get it from tailscale.com/download".into())
+            Err(
+                "Couldn't open the Tailscale app. If you run tailscaled from Homebrew, \
+                 start it with: sudo brew services start tailscale"
+                    .into(),
+            )
         };
     }
     #[cfg(windows)]
@@ -740,60 +787,112 @@ pub fn downloads_dir() -> std::path::PathBuf {
 }
 
 /// Moves every waiting Taildrop file into the downloads folder. A name that is
-/// taken gets a number, as `tailscale file get --conflict=rename` does.
+/// taken gets a number, as `tailscale file get --conflict=rename` does. A file
+/// that fails stays in the inbox and the rest still come through.
 pub fn receive_files() -> Result<std::path::PathBuf, String> {
     let dir = downloads_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let waiting = get_json("/localapi/v0/files/")?;
+    let mut failed = Vec::new();
     for name in waiting
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|f| f["Name"].as_str())
     {
-        // tailscaled already refuses names with separators; don't trust it blindly.
-        let Some(base) = std::path::Path::new(name).file_name() else {
-            continue;
-        };
-        let dest = free_name(&dir, &base.to_string_lossy());
-        let mut f = std::fs::File::create(&dest).map_err(|e| format!("{name}: {e}"))?;
-        let got = send(
-            "GET",
-            &format!("/localapi/v0/files/{}", url_escape(name)),
-            0,
-            Duration::from_secs(60),
-        )
-        .and_then(|c| reply(c, &mut f));
-        drop(f);
-        match got {
-            Ok(200) => delete_waiting_file(name)?,
-            Ok(s) => {
-                std::fs::remove_file(&dest).ok();
-                return Err(format!("{name}: HTTP {s}"));
-            }
-            Err(e) => {
-                std::fs::remove_file(&dest).ok();
-                return Err(format!("{name}: {e}"));
-            }
+        if let Err(e) = receive_one(&dir, name) {
+            failed.push(format!("{name}: {e}"));
         }
     }
-    Ok(dir)
+    if failed.is_empty() {
+        Ok(dir)
+    } else {
+        Err(failed.join("; "))
+    }
 }
 
-/// `name`, or `name (1)`, `name (2)` and so on before the extension.
-fn free_name(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
-    let first = dir.join(name);
-    if !first.exists() {
-        return first;
+/// Saves one file, and only deletes it from the inbox once all of it is on disk.
+fn receive_one(dir: &std::path::Path, name: &str) -> Result<(), String> {
+    // tailscaled already refuses names with separators; don't trust it blindly.
+    let base = std::path::Path::new(name)
+        .file_name()
+        .ok_or("not a plain file name")?
+        .to_string_lossy()
+        .into_owned();
+    let (dest, mut f) = create_free(dir, &base)?;
+    let got = send(
+        "GET",
+        &format!("/localapi/v0/files/{}", url_escape(name)),
+        0,
+        Duration::from_secs(60),
+    )
+    .and_then(|c| reply(c, &mut f))
+    .and_then(|status| {
+        f.sync_all().map_err(|e| e.to_string())?;
+        if status == 200 {
+            Ok(())
+        } else {
+            Err(format!("HTTP {status}"))
+        }
+    });
+    drop(f);
+    if let Err(e) = got {
+        std::fs::remove_file(&dest).ok();
+        return Err(e);
     }
+    quarantine(&dest);
+    delete_waiting_file(name)
+}
+
+/// Creates `name`, or `name (1)`, `name (2)` and so on before the extension.
+/// create_new refuses anything already there, a dangling symlink included, so
+/// a received file never writes through a link or over another file.
+fn create_free(
+    dir: &std::path::Path,
+    name: &str,
+) -> Result<(std::path::PathBuf, std::fs::File), String> {
     let (stem, ext) = match name.rsplit_once('.') {
         Some((s, e)) if !s.is_empty() => (s, format!(".{e}")),
         _ => (name, String::new()),
     };
-    (1..)
-        .map(|i| dir.join(format!("{stem} ({i}){ext}")))
-        .find(|p| !p.exists())
-        .unwrap_or(first)
+    for i in 0..1000 {
+        let path = if i == 0 {
+            dir.join(name)
+        } else {
+            dir.join(format!("{stem} ({i}){ext}"))
+        };
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(f) => return Ok((path, f)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Err("too many files with that name".into())
+}
+
+/// Marks a received file as downloaded on macOS, as the Tailscale CLI does,
+/// so Gatekeeper checks it before it runs.
+fn quarantine(_path: &std::path::Path) {
+    #[cfg(target_os = "macos")]
+    {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        Command::new("xattr")
+            .args([
+                "-w",
+                "com.apple.quarantine",
+                &format!("0081;{stamp:08x};Tailscale Desktop (unofficial);"),
+            ])
+            .arg(_path)
+            .status()
+            .ok();
+    }
 }
 
 pub fn delete_waiting_file(name: &str) -> Result<(), String> {
@@ -848,22 +947,27 @@ mod tests {
     }
 
     #[test]
-    fn free_name_numbers_taken_names() {
+    fn create_free_numbers_taken_names() {
         let dir = std::env::temp_dir().join(format!("tsdu-free-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(free_name(&dir, "a.txt"), dir.join("a.txt"));
-        std::fs::write(dir.join("a.txt"), "").unwrap();
-        std::fs::write(dir.join("a (1).txt"), "").unwrap();
-        assert_eq!(free_name(&dir, "a.txt"), dir.join("a (2).txt"));
-        std::fs::write(dir.join("notes"), "").unwrap();
-        assert_eq!(free_name(&dir, "notes"), dir.join("notes (1)"));
-        std::fs::write(dir.join(".env"), "").unwrap();
-        assert_eq!(free_name(&dir, ".env"), dir.join(".env (1)"));
+        let name = |n: &str| create_free(&dir, n).unwrap().0;
+        assert_eq!(name("a.txt"), dir.join("a.txt"));
+        assert_eq!(name("a.txt"), dir.join("a (1).txt"));
+        assert_eq!(name("a.txt"), dir.join("a (2).txt"));
+        assert_eq!(name("notes"), dir.join("notes"));
+        assert_eq!(name("notes"), dir.join("notes (1)"));
+        assert_eq!(name(".env"), dir.join(".env"));
+        assert_eq!(name(".env"), dir.join(".env (1)"));
+        #[cfg(unix)]
+        {
+            // A dangling link is taken, never written through.
+            std::os::unix::fs::symlink(dir.join("nowhere"), dir.join("link.pdf")).unwrap();
+            assert_eq!(name("link.pdf"), dir.join("link (1).pdf"));
+            assert!(!dir.join("nowhere").exists());
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Needs a running tailscaled. CI installs Tailscale on each OS and runs
-    /// this with `cargo test -- --ignored`, which proves the transport works.
     #[test]
     #[ignore]
     fn reaches_tailscaled() {

@@ -42,7 +42,7 @@ jobs:
       - name: Reach tailscaled
         run: cargo test --locked reaches_tailscaled -- --ignored --nocapture
       # macOS runners have a desktop session, so the app can draw a frame and
-      # save it. Nothing is running tailscaled there, which the shot shows.
+      # save it. The tailscaled started above is signed out, which the shot shows.
       - name: Screenshot
         if: runner.os == 'macOS'
         env:

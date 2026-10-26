@@ -345,7 +345,7 @@ impl App {
         let files: Vec<PathBuf> = self.drop.files.iter().map(|(f, _)| f.clone()).collect();
         let targets: Vec<Target> = picked
             .iter()
-            .map(|n| (n.stable_id.clone(), n.ipv4().to_owned(), self.mask.name(n)))
+            .map(|n| (n.stable_id.clone(), self.mask.name(n)))
             .collect();
         self.drop.sending = targets.len();
         let tx = self.tx.clone();
@@ -568,14 +568,14 @@ fn file_row(
     clicked
 }
 
-/// A device to send to: stable id, address, shown name.
-type Target = (String, String, String);
+/// A device to send to: stable id, shown name.
+type Target = (String, String);
 
 /// Tries every device even when one fails, and says which got the files.
 /// Also returns the ids of the devices that got all of them.
 fn send_to_all(files: &[PathBuf], targets: &[Target]) -> (Vec<String>, Result<String, String>) {
     let (mut ids, mut ok, mut failed) = (Vec::new(), Vec::new(), Vec::new());
-    for (id, _ip, name) in targets {
+    for (id, name) in targets {
         match send_all(files, id, name) {
             Ok(_) => {
                 ids.push(id.clone());
