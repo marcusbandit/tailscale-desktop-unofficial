@@ -94,8 +94,8 @@ Found a bug or have an idea? See [how to file an issue](CONTRIBUTING.md#filing-a
 
 ## License
 
-MIT, see [LICENSE](LICENSE). Tailscale and the Tailscale logo are trademarks of Tailscale Inc.
-and are used here only to say what the app is for. The OS logos come from
+MIT, see [LICENSE](LICENSE). The Tailscale name and logo are trademarks of Tailscale Inc. and are
+not covered by it, see [TRADEMARKS.md](TRADEMARKS.md). The OS logos come from
 [Nerd Fonts](https://github.com/ryanoasis/nerd-fonts) (MIT) and
-[Simple Icons](https://simpleicons.org) (CC0); see `assets/os-icons-LICENSE.txt`. Building and
-testing notes are in [CONTRIBUTING.md](CONTRIBUTING.md).
+[Simple Icons](https://simpleicons.org) (CC0). Building and testing notes are in
+[CONTRIBUTING.md](CONTRIBUTING.md).
