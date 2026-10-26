@@ -51,7 +51,10 @@ impl Mask {
 
     fn swaps_for(&self, snap: Option<&Snapshot>, names: bool) -> Vec<(String, String)> {
         let mut swaps = Vec::new();
-        if let Some(home) = std::env::var("HOME").ok().filter(|h| h.len() > 1) {
+        if let Some(home) = dirs::home_dir()
+            .map(|h| h.to_string_lossy().into_owned())
+            .filter(|h| h.len() > 1)
+        {
             swaps.push((home, "~".to_owned()));
         }
         if let Some(s) = snap {

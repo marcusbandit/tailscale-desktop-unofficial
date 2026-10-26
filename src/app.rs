@@ -1160,10 +1160,15 @@ impl App {
                 match self.snap.clone() {
                     Some(s) => self.status(ui, &s),
                     None => {
-                        let b = Btn::new("Start tailscaled").glyph(icon::POWER).primary();
+                        let label = if cfg!(target_os = "linux") {
+                            "Start tailscaled"
+                        } else {
+                            "Open Tailscale"
+                        };
+                        let b = Btn::new(label).glyph(icon::POWER).primary();
                         if ui.add(b).clicked() {
                             self.act(&ctx, "daemon", || {
-                                ts::start_daemon().map(|_| "tailscaled started".into())
+                                ts::start_daemon().map(|_| ts::STARTED.into())
                             });
                         }
                     }
@@ -1502,14 +1507,14 @@ impl App {
             ui.add_space(ui.available_height() * 0.3);
             ui.label(RichText::new(icon::POWER).size(42.0).color(FAINT));
             ui.add_space(8.0);
-            ui.label(RichText::new("Can't reach tailscaled").heading());
+            ui.label(RichText::new(ts::UNREACHABLE).heading());
             if let Some(e) = &self.error {
                 ui.label(RichText::new(self.mask.external(e)).color(MUTED));
             }
             ui.add_space(12.0);
-            if primary_button(ui, "Start tailscaled (asks for sudo)").clicked() {
+            if primary_button(ui, ts::START_LABEL).clicked() {
                 self.act(&ctx, "daemon", || {
-                    ts::start_daemon().map(|_| "tailscaled started".into())
+                    ts::start_daemon().map(|_| ts::STARTED.into())
                 });
             }
         });
@@ -1878,7 +1883,7 @@ impl App {
     }
 
     fn pick_and_send(&mut self, ctx: &egui::Context, n: &Node) {
-        let (ip, name) = (n.ipv4().to_owned(), self.mask.name(n));
+        let (id, name) = (n.stable_id.clone(), self.mask.name(n));
         self.act(ctx, &format!("send-{}", n.stable_id), move || {
             let Some(files) = rfd::FileDialog::new()
                 .set_title(format!("Send to {name}"))
@@ -1886,7 +1891,7 @@ impl App {
             else {
                 return Ok(String::new());
             };
-            send_all(&files, &ip, &name)
+            send_all(&files, &id, &name)
         });
     }
 
@@ -1914,9 +1919,9 @@ impl App {
             .and_then(|id| self.snap.as_ref()?.node(id).cloned());
         match target {
             Some(n) if n.taildrop_ok() => {
-                let (ip, name) = (n.ipv4().to_owned(), self.mask.name(&n));
+                let (id, name) = (n.stable_id.clone(), self.mask.name(&n));
                 self.act(ctx, &format!("send-{}", n.stable_id), move || {
-                    send_all(&dropped, &ip, &name)
+                    send_all(&dropped, &id, &name)
                 });
             }
             Some(n) => self.toast(
@@ -2003,9 +2008,9 @@ fn how_to_fix(ui: &mut Ui) {
     }
 }
 
-fn send_all(files: &[PathBuf], ip: &str, name: &str) -> Result<String, String> {
+fn send_all(files: &[PathBuf], stable_id: &str, name: &str) -> Result<String, String> {
     for f in files {
-        ts::send_file(f, ip)?;
+        ts::send_file(f, stable_id)?;
     }
     Ok(format!("Sent {} to {name}", files_label(files.len())))
 }

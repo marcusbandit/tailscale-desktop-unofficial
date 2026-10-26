@@ -1,9 +1,8 @@
 //! Talks to the local tailscaled: the LocalAPI over its unix socket for reads and
 //! preference changes, and the `tailscale` CLI where the CLI is the simpler route.
 
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::net::IpAddr;
-use std::os::unix::net::UnixStream;
 use std::process::Command;
 use std::time::Duration;
 
@@ -11,7 +10,7 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-const SOCKET: &str = "/var/run/tailscale/tailscaled.sock";
+use crate::transport::{self, Conn};
 
 // ---------------------------------------------------------------------------
 // LocalAPI transport
@@ -21,41 +20,57 @@ pub struct Response {
     pub body: Vec<u8>,
 }
 
-/// One HTTP/1.0 request over the tailscaled socket. HTTP/1.0 keeps the reply
-/// unchunked and closes the connection, so reading to EOF is the whole body.
+/// One HTTP/1.0 request to tailscaled. HTTP/1.0 keeps the reply unchunked and
+/// closes the connection, so reading to EOF is the whole body.
 pub fn local_api(
     method: &str,
     path: &str,
     body: Option<&[u8]>,
     timeout: Duration,
 ) -> Result<Response, String> {
-    let mut sock =
-        UnixStream::connect(SOCKET).map_err(|e| format!("tailscaled is not reachable ({e})"))?;
-    sock.set_read_timeout(Some(timeout)).ok();
-    sock.set_write_timeout(Some(timeout)).ok();
     let body = body.unwrap_or_default();
+    let mut conn = send(method, path, body.len() as u64, timeout)?;
+    conn.write_all(body).map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    let status = reply(conn, &mut out)?;
+    Ok(Response { status, body: out })
+}
+
+/// Opens a connection and writes the request head. The caller writes `len`
+/// bytes of body, then hands the connection to `reply`.
+fn send(method: &str, path: &str, len: u64, timeout: Duration) -> Result<Box<dyn Conn>, String> {
+    let link = transport::connect(timeout)?;
+    let auth = link
+        .auth
+        .map(|a| format!("Authorization: {a}\r\n"))
+        .unwrap_or_default();
     let head = format!(
-        "{method} {path} HTTP/1.0\r\nHost: local-tailscaled.sock\r\nSec-Tailscale: localapi\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-        body.len()
+        "{method} {path} HTTP/1.0\r\nHost: local-tailscaled.sock\r\n{auth}Sec-Tailscale: localapi\r\nContent-Type: application/json\r\nContent-Length: {len}\r\n\r\n"
     );
-    sock.write_all(head.as_bytes()).map_err(|e| e.to_string())?;
-    sock.write_all(body).map_err(|e| e.to_string())?;
-    let mut raw = Vec::new();
-    sock.read_to_end(&mut raw).map_err(|e| e.to_string())?;
-    let split = raw
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .ok_or("malformed reply from tailscaled")?;
-    let head = String::from_utf8_lossy(&raw[..split]);
-    let status = head
+    let mut conn = link.conn;
+    conn.write_all(head.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(conn)
+}
+
+/// Reads the reply's status and headers, then copies the body into `out`.
+fn reply(conn: Box<dyn Conn>, out: &mut dyn Write) -> Result<u16, String> {
+    let mut r = BufReader::new(conn);
+    let mut line = String::new();
+    r.read_line(&mut line).map_err(|e| e.to_string())?;
+    let status = line
         .split_whitespace()
         .nth(1)
         .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    Ok(Response {
-        status,
-        body: raw[split + 4..].to_vec(),
-    })
+        .ok_or("malformed reply from tailscaled")?;
+    loop {
+        line.clear();
+        let n = r.read_line(&mut line).map_err(|e| e.to_string())?;
+        if n == 0 || line == "\r\n" || line == "\n" {
+            break;
+        }
+    }
+    std::io::copy(&mut r, out).map_err(|e| e.to_string())?;
+    Ok(status)
 }
 
 fn get_json(path: &str) -> Result<Value, String> {
@@ -311,20 +326,12 @@ pub fn fetch_snapshot() -> Result<Snapshot, String> {
     })
 }
 
-/// The packet filter this device enforces on incoming traffic, read from the netmap.
+/// The packet filter this device enforces on incoming traffic, from its netmap.
 pub fn fetch_filter() -> Result<Vec<FilterRule>, String> {
-    let out = Command::new("tailscale")
-        .args(["debug", "netmap"])
-        .output()
-        .map_err(|e| e.to_string())?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).trim().to_owned());
-    }
-    let v: Value = serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())?;
-    let rules = v["PacketFilterRules"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
+    let rules = match get_json("/localapi/v0/debug-packet-filter-rules")? {
+        Value::Array(a) => a,
+        _ => Vec::new(),
+    };
     Ok(rules
         .iter()
         .map(|r| FilterRule {
@@ -410,16 +417,18 @@ pub fn patch_prefs(body: Value) -> Result<(), String> {
 
 pub fn set_running(on: bool) -> Result<(), String> {
     let prefs = json!({ "WantRunning": on, "WantRunningSet": true });
+    #[cfg(target_os = "linux")]
     let body = prefs.to_string();
     match patch_prefs(prefs) {
         Ok(()) => Ok(()),
         // Not the operator: send the same prefs change as root. `tailscale up`
         // would refuse whenever a non-default pref is set.
+        #[cfg(target_os = "linux")]
         Err(e) if e.contains("operator") => run_as_root(&[
             "curl",
             "-sf",
             "--unix-socket",
-            SOCKET,
+            transport::SOCKET,
             "-X",
             "PATCH",
             "-H",
@@ -458,7 +467,56 @@ pub fn set_advertise_exit(prefs: &Prefs, on: bool) -> Result<(), String> {
     patch_prefs(json!({ "AdvertiseRoutes": routes, "AdvertiseRoutesSet": true }))
 }
 
+/// On Linux the app starts tailscaled itself; elsewhere the Tailscale app runs it.
+pub const UNREACHABLE: &str = if cfg!(target_os = "linux") {
+    "Can't reach tailscaled"
+} else {
+    "Can't reach Tailscale"
+};
+
+pub const STARTED: &str = if cfg!(target_os = "linux") {
+    "tailscaled started"
+} else {
+    "Opened Tailscale"
+};
+
+/// What the button on the "can't reach" screen says, per OS.
+pub const START_LABEL: &str = if cfg!(target_os = "linux") {
+    "Start tailscaled (asks for sudo)"
+} else {
+    "Open Tailscale"
+};
+
+/// Linux starts the daemon; on Windows and macOS the Tailscale app owns it,
+/// so open the app and let it bring the service up.
 pub fn start_daemon() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let ok = Command::new("open")
+            .args(["-a", "Tailscale"])
+            .status()
+            .map_err(|e| e.to_string())?
+            .success();
+        return if ok {
+            Ok(())
+        } else {
+            Err("Tailscale is not installed. Get it from tailscale.com/download".into())
+        };
+    }
+    #[cfg(windows)]
+    {
+        let gui = std::env::var_os("ProgramFiles")
+            .map(|p| {
+                std::path::PathBuf::from(p)
+                    .join("Tailscale")
+                    .join("tailscale-ipn.exe")
+            })
+            .filter(|p| p.exists())
+            .ok_or("Tailscale is not installed. Get it from tailscale.com/download")?;
+        Command::new(gui).spawn().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
     run_as_root(&["systemctl", "start", "tailscaled"])
 }
 
@@ -478,6 +536,9 @@ pub fn is_forwarding_warning(text: &str) -> bool {
 /// this device can act as an exit node or subnet router. The IPv6 line may fail
 /// on hosts without IPv6, which the leading dash allows.
 pub fn enable_ip_forwarding(prefs: &Prefs) -> Result<(), String> {
+    if !cfg!(target_os = "linux") {
+        return Err("Only Linux needs IP forwarding turned on by hand".into());
+    }
     let script = format!(
         "printf 'net.ipv4.ip_forward = 1\\n-net.ipv6.conf.all.forwarding = 1\\n' > {FORWARDING_FILE} && sysctl -e -p {FORWARDING_FILE}"
     );
@@ -499,6 +560,9 @@ pub fn enable_ip_forwarding(prefs: &Prefs) -> Result<(), String> {
 /// Runs a command as root. pkexec when a polkit agent is around to ask, otherwise
 /// a terminal window running sudo so the password or face prompt has somewhere to go.
 pub fn run_as_root(cmd: &[&str]) -> Result<(), String> {
+    if !cfg!(target_os = "linux") {
+        return Err("This needs an administrator; use the Tailscale app instead".into());
+    }
     let has_agent = Command::new("pgrep")
         .args([
             "-f",
@@ -630,46 +694,106 @@ pub fn ping(ip: &str, icmp: bool) -> Result<Pong, String> {
     })
 }
 
-pub fn send_file(path: &std::path::Path, target_ip: &str) -> Result<(), String> {
-    let out = Command::new("tailscale")
-        .args(["file", "cp"])
-        .arg(path)
-        .arg(format!("{target_ip}:"))
-        .output()
-        .map_err(|e| e.to_string())?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_owned())
+/// Sends one file to a device over Taildrop, streaming it from disk.
+pub fn send_file(path: &std::path::Path, stable_id: &str) -> Result<(), String> {
+    let name = path
+        .file_name()
+        .ok_or("not a file")?
+        .to_string_lossy()
+        .into_owned();
+    let mut f = std::fs::File::open(path).map_err(|e| format!("{name}: {e}"))?;
+    let len = f.metadata().map_err(|e| e.to_string())?.len();
+    let mut conn = send(
+        "PUT",
+        &format!(
+            "/localapi/v0/file-put/{}/{}",
+            url_escape(stable_id),
+            url_escape(&name)
+        ),
+        len,
+        Duration::from_secs(60),
+    )?;
+    std::io::copy(&mut f, &mut conn).map_err(|e| format!("{name}: {e}"))?;
+    let mut body = Vec::new();
+    match reply(conn, &mut body)? {
+        200..=299 => Ok(()),
+        s => Err(format!(
+            "HTTP {s}: {}",
+            String::from_utf8_lossy(&body).trim()
+        )),
     }
 }
 
 pub fn downloads_dir() -> std::path::PathBuf {
-    let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()));
-    Command::new("xdg-user-dir")
+    let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
+    #[cfg(target_os = "linux")]
+    if let Some(d) = Command::new("xdg-user-dir")
         .arg("DOWNLOAD")
         .output()
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
         .filter(|s| !s.is_empty() && *s != home.to_string_lossy())
-        .map(Into::into)
-        .unwrap_or_else(|| home.join("Downloads"))
+    {
+        return d.into();
+    }
+    dirs::download_dir().unwrap_or_else(|| home.join("Downloads"))
 }
 
-/// Moves every waiting Taildrop file into the downloads folder.
+/// Moves every waiting Taildrop file into the downloads folder. A name that is
+/// taken gets a number, as `tailscale file get --conflict=rename` does.
 pub fn receive_files() -> Result<std::path::PathBuf, String> {
     let dir = downloads_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let out = Command::new("tailscale")
-        .args(["file", "get", "--conflict=rename"])
-        .arg(&dir)
-        .output()
-        .map_err(|e| e.to_string())?;
-    if out.status.success() {
-        Ok(dir)
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_owned())
+    let waiting = get_json("/localapi/v0/files/")?;
+    for name in waiting
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|f| f["Name"].as_str())
+    {
+        // tailscaled already refuses names with separators; don't trust it blindly.
+        let Some(base) = std::path::Path::new(name).file_name() else {
+            continue;
+        };
+        let dest = free_name(&dir, &base.to_string_lossy());
+        let mut f = std::fs::File::create(&dest).map_err(|e| format!("{name}: {e}"))?;
+        let got = send(
+            "GET",
+            &format!("/localapi/v0/files/{}", url_escape(name)),
+            0,
+            Duration::from_secs(60),
+        )
+        .and_then(|c| reply(c, &mut f));
+        drop(f);
+        match got {
+            Ok(200) => delete_waiting_file(name)?,
+            Ok(s) => {
+                std::fs::remove_file(&dest).ok();
+                return Err(format!("{name}: HTTP {s}"));
+            }
+            Err(e) => {
+                std::fs::remove_file(&dest).ok();
+                return Err(format!("{name}: {e}"));
+            }
+        }
     }
+    Ok(dir)
+}
+
+/// `name`, or `name (1)`, `name (2)` and so on before the extension.
+fn free_name(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let first = dir.join(name);
+    if !first.exists() {
+        return first;
+    }
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s, format!(".{e}")),
+        _ => (name, String::new()),
+    };
+    (1..)
+        .map(|i| dir.join(format!("{stem} ({i}){ext}")))
+        .find(|p| !p.exists())
+        .unwrap_or(first)
 }
 
 pub fn delete_waiting_file(name: &str) -> Result<(), String> {
@@ -710,6 +834,7 @@ mod tests {
         assert!(!ip_matches("100.94.40.21", "fd7a:115c:a1e0::6d01:2897"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn shell_quoting_round_trips() {
         let body = r#"{"WantRunning":true}"#;
@@ -720,6 +845,32 @@ mod tests {
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout), body);
         assert_eq!(shell_quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn free_name_numbers_taken_names() {
+        let dir = std::env::temp_dir().join(format!("tsdu-free-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(free_name(&dir, "a.txt"), dir.join("a.txt"));
+        std::fs::write(dir.join("a.txt"), "").unwrap();
+        std::fs::write(dir.join("a (1).txt"), "").unwrap();
+        assert_eq!(free_name(&dir, "a.txt"), dir.join("a (2).txt"));
+        std::fs::write(dir.join("notes"), "").unwrap();
+        assert_eq!(free_name(&dir, "notes"), dir.join("notes (1)"));
+        std::fs::write(dir.join(".env"), "").unwrap();
+        assert_eq!(free_name(&dir, ".env"), dir.join(".env (1)"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Needs a running tailscaled. CI installs Tailscale on each OS and runs
+    /// this with `cargo test -- --ignored`, which proves the transport works.
+    #[test]
+    #[ignore]
+    fn reaches_tailscaled() {
+        let v = get_json("/localapi/v0/status").expect("LocalAPI status");
+        let state = v["BackendState"].as_str().unwrap_or("");
+        assert!(!state.is_empty(), "no BackendState in {v}");
+        println!("tailscaled says {state}");
     }
 
     #[test]

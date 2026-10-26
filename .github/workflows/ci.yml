@@ -5,11 +5,57 @@ on:
     branches: [main]
 jobs:
   test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libgtk-3-dev
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev
       - run: cargo test --locked
+      # Install the real Tailscale and check the app's transport reaches it:
+      # the unix socket on Linux, the named pipe on Windows, the socket of the
+      # open-source daemon on macOS. Nothing signs in; the state is enough.
+      - name: Start Tailscale (Linux)
+        if: runner.os == 'Linux'
+        run: curl -fsSL https://tailscale.com/install.sh | sh
+      - name: Start Tailscale (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi -OutFile ts.msi
+          Start-Process msiexec -ArgumentList '/i','ts.msi','/quiet','/norestart' -Wait
+          Start-Service Tailscale -ErrorAction SilentlyContinue
+          for ($i = 0; $i -lt 30 -and -not (Test-Path '\\.\pipe\ProtectedPrefix\Administrators\Tailscale\tailscaled'); $i++) { Start-Sleep 1 }
+      - name: Start Tailscale (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install tailscale
+          sudo "$(brew --prefix)/bin/tailscaled" --state=mem: > tailscaled.log 2>&1 &
+          for _ in $(seq 30); do [ -S /var/run/tailscaled.socket ] && break; sleep 1; done
+      - name: Reach tailscaled
+        run: cargo test --locked reaches_tailscaled -- --ignored --nocapture
+      # macOS runners have a desktop session, so the app can draw a frame and
+      # save it. Nothing is running tailscaled there, which the shot shows.
+      - name: Screenshot
+        if: runner.os == 'macOS'
+        env:
+          TSDU_SHOT: ${{ github.workspace }}/shot-macos.png
+          TSDU_DELAY: '4'
+        run: |
+          cargo build --locked
+          ./target/debug/tailscale-desktop-unofficial & pid=$!
+          for _ in $(seq 60); do [ -f "$TSDU_SHOT" ] && break; sleep 1; done
+          kill $pid 2>/dev/null || true
+          file "$TSDU_SHOT"
+      - if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: shot-macos
+          path: shot-macos.png

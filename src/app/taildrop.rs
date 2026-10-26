@@ -575,8 +575,8 @@ type Target = (String, String, String);
 /// Also returns the ids of the devices that got all of them.
 fn send_to_all(files: &[PathBuf], targets: &[Target]) -> (Vec<String>, Result<String, String>) {
     let (mut ids, mut ok, mut failed) = (Vec::new(), Vec::new(), Vec::new());
-    for (id, ip, name) in targets {
-        match send_all(files, ip, name) {
+    for (id, _ip, name) in targets {
+        match send_all(files, id, name) {
             Ok(_) => {
                 ids.push(id.clone());
                 ok.push(name.clone());

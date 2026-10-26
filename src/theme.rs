@@ -1,4 +1,3 @@
-use std::process::Command;
 use std::sync::Arc;
 
 use eframe::egui::{
@@ -251,47 +250,43 @@ pub fn paint_mark(painter: &egui::Painter, rect: egui::Rect) {
     }
 }
 
-fn font_file(pattern: &str) -> Option<Vec<u8>> {
-    let out = Command::new("fc-match")
-        .args(["-f", "%{file}", pattern])
-        .output()
-        .ok()?;
-    let path = String::from_utf8_lossy(&out.stdout).to_string();
-    std::fs::read(path.trim()).ok()
-}
-
 pub fn install(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
-    let mut add = |name: &str, pattern: &str, family: FontFamily, first: bool| {
-        if let Some(bytes) = font_file(pattern) {
-            fonts
-                .font_data
-                .insert(name.to_owned(), Arc::new(FontData::from_owned(bytes)));
-            let list = fonts.families.entry(family).or_default();
-            if first {
-                list.insert(0, name.to_owned())
-            } else {
-                list.push(name.to_owned())
-            }
+    // The faces ship inside the app, subset to the scripts and icons it uses,
+    // so it looks the same on systems without Noto or a Nerd Font.
+    let mut add = |name: &str, bytes: &'static [u8], family: FontFamily, first: bool| {
+        fonts
+            .font_data
+            .insert(name.to_owned(), Arc::new(FontData::from_static(bytes)));
+        let list = fonts.families.entry(family).or_default();
+        if first {
+            list.insert(0, name.to_owned())
+        } else {
+            list.push(name.to_owned())
         }
     };
-    add("ui", "Noto Sans:weight=80", FontFamily::Proportional, true);
+    add(
+        "ui",
+        include_bytes!("../assets/fonts/NotoSans-Regular.ttf"),
+        FontFamily::Proportional,
+        true,
+    );
     add(
         "mono",
-        "JetBrainsMono Nerd Font:style=Medium",
+        include_bytes!("../assets/fonts/JetBrainsMono-Medium.ttf"),
         FontFamily::Monospace,
         true,
     );
-    // Icons come from the Nerd Font, as a fallback behind the UI face.
+    // UI icons from the Nerd Font, as a fallback behind the UI face.
     add(
         "icons",
-        "JetBrainsMono Nerd Font",
+        include_bytes!("../assets/fonts/ui-icons.ttf"),
         FontFamily::Proportional,
         false,
     );
     add(
         "ui-strong",
-        "Noto Sans:weight=200",
+        include_bytes!("../assets/fonts/NotoSans-Bold.ttf"),
         FontFamily::Name("strong".into()),
         true,
     );

@@ -1,0 +1,125 @@
+name: release
+# Push a tag like v0.1.0 that matches the version in Cargo.toml. Each OS builds
+# its own package, then one job publishes them all as a GitHub release.
+# A pull request that touches packaging, or a run from the Actions tab, builds
+# every package without publishing.
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths: ['.github/workflows/release.yml', 'packaging/**', 'build.rs', 'Cargo.toml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: linux (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        include:
+          # The oldest supported Ubuntu, so the binary runs on older glibc too.
+          - { arch: x86_64, runner: ubuntu-22.04 }
+          - { arch: aarch64, runner: ubuntu-22.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev
+      - run: cargo build --release --locked
+      - name: Package
+        run: |
+          v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          d=tailscale-desktop-unofficial-$v-${{ matrix.arch }}-linux
+          mkdir -p $d
+          install -m755 target/release/tailscale-desktop-unofficial $d/
+          cp packaging/tailscale-desktop-unofficial.desktop assets/icon.svg assets/icon-256.png LICENSE TRADEMARKS.md README.md $d/
+          tar czf $d.tar.gz $d
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: '*.tar.gz'
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --locked
+      - name: Package
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"' | Select-Object -First 1).Matches.Groups[1].Value
+          $d = "tailscale-desktop-unofficial-$v-x86_64-windows"
+          New-Item -ItemType Directory $d | Out-Null
+          Copy-Item target/release/tailscale-desktop-unofficial.exe, LICENSE, TRADEMARKS.md, README.md $d
+          Compress-Archive -Path "$d/*" -DestinationPath "$d.zip"
+      - name: Installer
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"' | Select-Object -First 1).Matches.Groups[1].Value
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) { choco install innosetup -y --no-progress | Out-Null }
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          & $iscc "/DVersion=$v" "/DSource=$PWD\target\release\tailscale-desktop-unofficial.exe" packaging\windows\installer.iss
+          Move-Item "packaging\windows\tailscale-desktop-unofficial-$v-x86_64-windows-setup.exe" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            *.zip
+            *-setup.exe
+
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+      # One app for Apple silicon and Intel. Without a Developer ID it is signed
+      # ad hoc, which Apple silicon needs to run it at all.
+      - name: Bundle
+        run: |
+          v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          app="Tailscale Desktop (unofficial).app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          lipo -create -output "$app/Contents/MacOS/tailscale-desktop-unofficial" \
+            target/aarch64-apple-darwin/release/tailscale-desktop-unofficial \
+            target/x86_64-apple-darwin/release/tailscale-desktop-unofficial
+          sed "s/VERSION/$v/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
+          cp packaging/macos/AppIcon.icns "$app/Contents/Resources/"
+          codesign --force --deep --sign - "$app"
+          ditto -c -k --keepParent "$app" tailscale-desktop-unofficial-$v-macos-universal.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: '*.zip'
+
+  publish:
+    needs: [linux, windows, macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches Cargo.toml
+        run: |
+          want=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          [ "${GITHUB_REF_NAME#v}" = "$want" ] || { echo "tag $GITHUB_REF_NAME but Cargo.toml says $want"; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes --notes-file .github/release-notes.md

@@ -1,3 +1,6 @@
+// No console window behind the app on Windows.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod access;
 mod app;
 mod graph;
@@ -7,6 +10,7 @@ mod privacy;
 mod settings;
 mod shot;
 mod theme;
+mod transport;
 mod ts;
 mod widgets;
 

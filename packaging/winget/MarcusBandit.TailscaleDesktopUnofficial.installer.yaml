@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.9.0.schema.json
+PackageIdentifier: MarcusBandit.TailscaleDesktopUnofficial
+PackageVersion: @VERSION@
+InstallerType: inno
+Scope: user
+InstallModes:
+- interactive
+- silent
+- silentWithProgress
+UpgradeBehavior: install
+Dependencies:
+  PackageDependencies:
+  - PackageIdentifier: Tailscale.Tailscale
+ProductCode: '{7D8C8BA7-DA0C-4614-BB2D-F51FE63B5EEB}_is1'
+ReleaseDate: @DATE@
+Installers:
+- Architecture: x64
+  InstallerUrl: https://github.com/marcusbandit/tailscale-desktop-unofficial/releases/download/v@VERSION@/tailscale-desktop-unofficial-@VERSION@-x86_64-windows-setup.exe
+  InstallerSha256: @SHA_WINDOWS_SETUP@
+ManifestType: installer
+ManifestVersion: 1.9.0

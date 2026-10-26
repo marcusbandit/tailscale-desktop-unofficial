@@ -6,8 +6,9 @@
 
 A desktop app for your tailnet. See every device, who can reach whom, and send files with Taildrop.
 
-[![platform](https://img.shields.io/badge/platform-linux-5B9BFF?style=for-the-badge&logo=linux&logoColor=E7E9EE&labelColor=0D0F13)](#install)
+[![platform](https://img.shields.io/badge/platform-linux_|_windows_|_macos-5B9BFF?style=for-the-badge&logoColor=E7E9EE&labelColor=0D0F13)](#install)
 [![built with rust](https://img.shields.io/badge/built_with-rust_+_egui-5B9BFF?style=for-the-badge&logo=rust&logoColor=E7E9EE&labelColor=0D0F13)](https://github.com/emilk/egui)
+[![release](https://img.shields.io/github/v/release/marcusbandit/tailscale-desktop-unofficial?style=for-the-badge&logo=github&logoColor=E7E9EE&labelColor=0D0F13&color=5B9BFF)](https://github.com/marcusbandit/tailscale-desktop-unofficial/releases/latest)
 [![last commit](https://img.shields.io/github/last-commit/marcusbandit/tailscale-desktop-unofficial?style=for-the-badge&logo=git&logoColor=E7E9EE&labelColor=0D0F13&color=3DD68C)](https://github.com/marcusbandit/tailscale-desktop-unofficial/commits/main)
 [![license](https://img.shields.io/github/license/marcusbandit/tailscale-desktop-unofficial?style=for-the-badge&labelColor=0D0F13&color=8B93A1)](LICENSE)
 [![ko-fi](https://img.shields.io/badge/ko--fi-buy_me_a_coffee-FF7A4D?style=for-the-badge&logo=kofi&logoColor=FF7A4D&labelColor=0D0F13)](https://ko-fi.com/marcusbandit)
@@ -23,25 +24,46 @@ A desktop app for your tailnet. See every device, who can reach whom, and send f
 
 ## Install
 
-Linux for now. Windows and macOS are planned ([#31](https://github.com/marcusbandit/tailscale-desktop-unofficial/issues/31)).
+You need [Tailscale](https://tailscale.com/download) installed and signed in. The app talks to it.
 
-You need Tailscale running, a Rust toolchain and `python3`. Then:
+| System | Install |
+| --- | --- |
+| Arch Linux | `yay -S tailscale-desktop-unofficial-bin` |
+| macOS | `brew install --cask marcusbandit/tap/tailscale-desktop-unofficial` |
+| Windows | the `-windows-setup.exe` from the [latest release](https://github.com/marcusbandit/tailscale-desktop-unofficial/releases/latest) |
+| Other Linux | the `-linux.tar.gz` from the [latest release](https://github.com/marcusbandit/tailscale-desktop-unofficial/releases/latest) |
+
+On Linux, make your user the Tailscale operator so the app can change settings without asking for
+your password:
+
+```sh
+sudo tailscale set --operator=$USER
+```
+
+<details>
+<summary>First launch on macOS and Windows</summary>
+
+The app isn't signed with a paid Apple or Microsoft certificate yet. Homebrew clears the macOS
+warning for you. If you downloaded the zip instead, open the app once, then go to System Settings,
+Privacy & Security, and press **Open Anyway**. On Windows, SmartScreen may say it protected your
+PC: press **More info**, then **Run anyway**.
+</details>
+
+<details>
+<summary>Build from source</summary>
+
+You need a Rust toolchain. Debian and Ubuntu also need `pkg-config libxkbcommon-dev
+libwayland-dev`. On Linux, `scripts/install.sh` builds the app and installs it for your user
+with a desktop entry, using `python3`.
 
 ```sh
 git clone https://github.com/marcusbandit/tailscale-desktop-unofficial
 cd tailscale-desktop-unofficial
-scripts/install.sh
-sudo tailscale set --operator=$USER
+cargo run --release      # or scripts/install.sh on Linux
 ```
 
-The last line lets the app change Tailscale settings without asking for your password. Skip it
-and the app asks for root through polkit or sudo when it needs to.
-
-<details>
-<summary>Build dependencies</summary>
-
-Debian and Ubuntu need `pkg-config libxkbcommon-dev libwayland-dev` to build. The Taildrop file picker uses `xdg-desktop-portal`, and the API secret is
-stored with `secret-tool` from `libsecret-tools`.
+At runtime on Linux, the Taildrop file picker uses `xdg-desktop-portal`, and the API secret is
+stored with `secret-tool` from `libsecret`.
 </details>
 
 ## API credential
@@ -58,7 +80,8 @@ the [admin console](https://console.tailscale.com/admin/settings/trust-credentia
 3. Press **Generate credential**, copy the secret and paste it into the app. Tailscale shows it
    only once.
 
-The credential can only read. The app keeps it in your system keyring. You can skip it; devices
+The credential can only read. The app keeps it in your system keyring: the Secret Service on
+Linux, the Keychain on macOS, Credential Manager on Windows. You can skip it; devices
 then show their OS family without the version. OS details are cached in
 `~/.cache/tailscale-desktop-unofficial/os.json`.
 

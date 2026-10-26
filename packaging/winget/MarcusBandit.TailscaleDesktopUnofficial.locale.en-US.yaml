@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.9.0.schema.json
+PackageIdentifier: MarcusBandit.TailscaleDesktopUnofficial
+PackageVersion: @VERSION@
+PackageLocale: en-US
+Publisher: Marcus Rosado
+PublisherUrl: https://github.com/marcusbandit
+PublisherSupportUrl: https://github.com/marcusbandit/tailscale-desktop-unofficial/issues
+Author: Marcus Rosado
+PackageName: Tailscale Desktop (unofficial)
+PackageUrl: https://github.com/marcusbandit/tailscale-desktop-unofficial
+License: MIT
+LicenseUrl: https://github.com/marcusbandit/tailscale-desktop-unofficial/blob/main/LICENSE
+ShortDescription: Unofficial desktop app for Tailscale. See every device, who can reach whom, and send files with Taildrop.
+Description: |-
+  An unofficial desktop app for your tailnet, not made by or affiliated with Tailscale Inc.
+  It lists every device with its OS, online state and address, draws an access graph of who
+  can reach whom, sends files with Taildrop, pings devices, and switches exit nodes, subnet
+  routes and shields up. It talks to the Tailscale app already running on the machine.
+Moniker: tailscale-desktop-unofficial
+Tags:
+- tailscale
+- vpn
+- wireguard
+- taildrop
+- network
+ReleaseNotesUrl: https://github.com/marcusbandit/tailscale-desktop-unofficial/releases/tag/v@VERSION@
+ManifestType: defaultLocale
+ManifestVersion: 1.9.0
