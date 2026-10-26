@@ -15,7 +15,7 @@ A desktop app for your tailnet. See every device, who can reach whom, and send f
 
 Linux for now. Windows and macOS are planned ([#31](https://github.com/marcusbandit/tailscale-desktop-unofficial/issues/31)).
 
-You need Tailscale running and a Rust toolchain. Then:
+You need Tailscale running, a Rust toolchain and `python3`. Then:
 
 ```sh
 git clone https://github.com/marcusbandit/tailscale-desktop-unofficial
@@ -24,13 +24,13 @@ scripts/install.sh
 sudo tailscale set --operator=$USER
 ```
 
-The last line lets the app change Tailscale settings without asking for your password each time.
+The last line lets the app change Tailscale settings without asking for your password. Skip it
+and the app asks for root through polkit or sudo when it needs to.
 
 <details>
 <summary>Build dependencies</summary>
 
-Debian and Ubuntu need `pkg-config libxkbcommon-dev libwayland-dev` to build and `python3` for
-the install script. The Taildrop file picker uses `xdg-desktop-portal`, and the API secret is
+Debian and Ubuntu need `pkg-config libxkbcommon-dev libwayland-dev` to build. The Taildrop file picker uses `xdg-desktop-portal`, and the API secret is
 stored with `secret-tool` from `libsecret-tools`.
 </details>
 
@@ -41,14 +41,16 @@ on your machine. Some details about other devices, like their OS version and Lin
 come from the Tailscale API, so for those the app needs a read-only API credential.
 
 The app walks you through it on first launch, or later from Settings, Device details, Set up. In
-the [admin console](https://login.tailscale.com/admin/settings/trust-credentials):
+the [admin console](https://console.tailscale.com/admin/settings/trust-credentials):
 
 1. Press **Credential**, keep **OAuth** and press **Continue**.
 2. Under **Custom scopes**, pick **All - Read**.
-3. Press **Generate credential**, copy the secret and paste it into the app.
+3. Press **Generate credential**, copy the secret and paste it into the app. Tailscale shows it
+   only once.
 
 The credential can only read. The app keeps it in your system keyring. You can skip it; devices
-then show their OS family without the version.
+then show their OS family without the version. OS details are cached in
+`~/.cache/tailscale-desktop-unofficial/os.json`.
 
 ## What it does
 
@@ -58,8 +60,13 @@ then show their OS family without the version.
 - Draws an access graph of who can open connections to whom
 - Sends files to one or more devices with Taildrop, and shows files waiting for you
 - Pings a device and shows latency and the path
-- Picks an exit node and switches LAN access, subnet routes and shields up
-- Privacy mode (Ctrl+Shift+P) masks IPs, accounts and device names for streams and screenshots
+- Turns Tailscale on and off, picks an exit node, offers this device as one, and switches LAN
+  access, subnet routes and shields up
+- Shows health warnings from Tailscale, with a one-click fix for IP forwarding
+- Privacy mode (Ctrl+Shift+P) masks IPs and accounts for streams and screenshots, and device
+  names too if you turn that on
+
+The welcome tour reopens from Settings or the status menu.
 
 ## Support
 
