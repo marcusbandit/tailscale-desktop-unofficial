@@ -15,10 +15,10 @@ A good bug report has:
 
 - what you did, what you expected, and what happened instead
 - the app version, from Settings, and how you installed it
-- your OS and desktop, for example Arch Linux on Hyprland or Windows 11
+- your OS and desktop, for example Arch Linux on Hyprland or Ubuntu on GNOME
 - the output of `tailscale version`
 - a screenshot if it is something you can see. Turn on privacy mode first (Ctrl+Shift+P, and
-  Hide device names in Settings), so your IPs, accounts and device names stay private
+  Hide device names too in Settings), so your IPs, accounts and device names stay private
 
 Never paste your API credential secret, auth keys or a full `tailscale debug netmap` into an
 issue. Issues are public.
@@ -29,7 +29,7 @@ either, belong with [Tailscale](https://github.com/tailscale/tailscale/issues), 
 ## Contributing code
 
 1. For anything bigger than a small fix, open an issue first so we can agree on the approach.
-2. Fork the repo and make a branch named after the issue, like `fix/12-crash-on-rotate`.
+2. Fork the repo and make a branch named after the issue, like `fix/12-graph-label-overlap`.
 3. Build and run with `cargo run --release`, and test with `cargo test`. CI runs the same tests
    on every pull request.
 4. Open a pull request that says what changed and why, with `Closes #N` for the issue. For

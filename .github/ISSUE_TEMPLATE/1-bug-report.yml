@@ -8,7 +8,7 @@ body:
       value: |
         Thanks for taking the time. Issues are public, so leave out your API credential
         secret, auth keys and anything else private. For screenshots, turn on privacy mode
-        first (Ctrl+Shift+P, and Hide device names in Settings).
+        first (Ctrl+Shift+P, and Hide device names too in Settings).
 
   - type: textarea
     id: what-happened
@@ -43,11 +43,8 @@ body:
     attributes:
       label: How you installed it
       options:
-        - GitHub release download
-        - AUR
-        - Homebrew
-        - winget
-        - Built from source
+        - scripts/install.sh from a clone
+        - cargo run or cargo build
         - Other
     validations:
       required: true
@@ -56,7 +53,7 @@ body:
     id: os
     attributes:
       label: OS and desktop
-      placeholder: Arch Linux on Hyprland, Windows 11, macOS 26
+      placeholder: Arch Linux on Hyprland, Ubuntu 26.04 on GNOME
     validations:
       required: true
 
