@@ -1,0 +1,84 @@
+name: Bug report
+description: Something in the app is broken or behaves wrong.
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. Issues are public, so leave out your API credential
+        secret, auth keys and anything else private. For screenshots, turn on privacy mode
+        first (Ctrl+Shift+P, and Hide device names in Settings).
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Taildrop
+        2. Pick two devices
+        3. Press Send
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: Shown at the bottom of Settings.
+      placeholder: 0.1.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How you installed it
+      options:
+        - GitHub release download
+        - AUR
+        - Homebrew
+        - winget
+        - Built from source
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and desktop
+      placeholder: Arch Linux on Hyprland, Windows 11, macOS 26
+    validations:
+      required: true
+
+  - type: input
+    id: tailscale
+    attributes:
+      label: Tailscale version
+      description: The first line of `tailscale version`.
+      placeholder: 1.90.0
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Screenshots or logs
+      description: Drag images in here. For terminal output, run the app from a terminal and paste what it prints.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you send
+      options:
+        - label: I searched the existing issues and this is not one of them.
+          required: true
+        - label: Nothing private (secrets, keys, real IPs I care about) is in this report.
+          required: true

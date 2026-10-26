@@ -1,8 +1,43 @@
 # Contributing
 
-Build and run with `cargo run --release`, and test with `cargo test`.
+Bug reports, ideas and pull requests are all welcome. This is a small project run in spare time,
+so a clear report gets fixed faster than a vague one.
 
-## Screenshots
+## Filing an issue
+
+1. Search [open and closed issues](https://github.com/marcusbandit/tailscale-desktop-unofficial/issues?q=is%3Aissue)
+   first. If yours is already there, add what is different about your case to it.
+2. Press **New issue** and pick **Bug report** or **Feature idea**. The form asks for what it
+   needs.
+3. Keep one problem per issue.
+
+A good bug report has:
+
+- what you did, what you expected, and what happened instead
+- the app version, from Settings, and how you installed it
+- your OS and desktop, for example Arch Linux on Hyprland or Windows 11
+- the output of `tailscale version`
+- a screenshot if it is something you can see. Turn on privacy mode first (Ctrl+Shift+P, and
+  Hide device names in Settings), so your IPs, accounts and device names stay private
+
+Never paste your API credential secret, auth keys or a full `tailscale debug netmap` into an
+issue. Issues are public.
+
+Problems with Tailscale itself, such as a device that will not connect in the official client
+either, belong with [Tailscale](https://github.com/tailscale/tailscale/issues), not here.
+
+## Contributing code
+
+1. For anything bigger than a small fix, open an issue first so we can agree on the approach.
+2. Fork the repo and make a branch named after the issue, like `fix/12-crash-on-rotate`.
+3. Build and run with `cargo run --release`, and test with `cargo test`. CI runs the same tests
+   on every pull request.
+4. Open a pull request that says what changed and why, with `Closes #N` for the issue. For
+   anything visible, add a screenshot taken with privacy mode on.
+
+Keep pull requests to one change. A refactor and a feature in one PR are hard to review.
+
+## Screenshots for development
 
 `scripts/shot.sh NAME [VAR=value ...]` runs the debug binary inside a headless `gamescope` and
 saves a PNG to `captures/`. It does not build, so run `cargo build` first. Turn privacy mode on

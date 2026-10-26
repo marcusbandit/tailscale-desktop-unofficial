@@ -1,0 +1,32 @@
+name: Feature idea
+description: Something the app should do that it does not do yet.
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you are trying to do
+      description: The task or the annoyance, in your own words. Start with the problem, not the solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+      description: How you picture it working. A sketch or a screenshot of another app is welcome.
+
+  - type: textarea
+    id: today
+    attributes:
+      label: How you do it today
+      description: The workaround, if there is one, such as the tailscale CLI or the admin console.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you send
+      options:
+        - label: I searched the existing issues and this is not one of them.
+          required: true

@@ -1,13 +1,23 @@
-<img src="assets/icon.svg" width="72" align="left" alt="App icon">
+<div align="center">
+
+<img src="assets/icon.svg" width="96" alt="App icon: the Tailscale mark with its top right dot lit blue">
 
 # Tailscale Desktop (unofficial)
 
 A desktop app for your tailnet. See every device, who can reach whom, and send files with Taildrop.
 
-<br clear="left">
+[![platform](https://img.shields.io/badge/platform-linux-5B9BFF?style=for-the-badge&logo=linux&logoColor=E7E9EE&labelColor=0D0F13)](#install)
+[![built with rust](https://img.shields.io/badge/built_with-rust_+_egui-5B9BFF?style=for-the-badge&logo=rust&logoColor=E7E9EE&labelColor=0D0F13)](https://github.com/emilk/egui)
+[![last commit](https://img.shields.io/github/last-commit/marcusbandit/tailscale-desktop-unofficial?style=for-the-badge&logo=git&logoColor=E7E9EE&labelColor=0D0F13&color=3DD68C)](https://github.com/marcusbandit/tailscale-desktop-unofficial/commits/main)
+[![license](https://img.shields.io/github/license/marcusbandit/tailscale-desktop-unofficial?style=for-the-badge&labelColor=0D0F13&color=8B93A1)](LICENSE)
+[![ko-fi](https://img.shields.io/badge/ko--fi-buy_me_a_coffee-FF7A4D?style=for-the-badge&logo=kofi&logoColor=FF7A4D&labelColor=0D0F13)](https://ko-fi.com/marcusbandit)
 
-[![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-support%20the%20app-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/marcusbandit)
-&nbsp;Not made by or affiliated with Tailscale Inc.
+</div>
+
+> **Unofficial.** This app is made independently and is not affiliated with, endorsed by or made
+> by Tailscale Inc. Tailscale and the Tailscale logo are trademarks of Tailscale Inc. The logo is
+> used so people can see at once what the app is for. Its top right dot is lit blue to mark it as
+> the unofficial one.
 
 ![The device list with each device's OS, status and address](assets/screenshots/devices.png)
 
@@ -70,9 +80,17 @@ The welcome tour reopens from Settings or the status menu.
 
 ## Support
 
-The app is free. If it's useful to you, you can [buy me a coffee on Ko-fi](https://ko-fi.com/marcusbandit).
-That money goes to me, not to Tailscale Inc. Bugs and ideas go in
-[Issues](https://github.com/marcusbandit/tailscale-desktop-unofficial/issues).
+The app is free and stays free. If it saves you a trip to the admin console and you feel like
+buying me a coffee, there is a [Ko-fi](https://ko-fi.com/marcusbandit). That money goes to me,
+not to Tailscale Inc. A star or a good bug report helps just as much.
+
+<div align="center">
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/marcusbandit)
+
+</div>
+
+Found a bug or have an idea? See [how to file an issue](CONTRIBUTING.md#filing-an-issue).
 
 ## License
 
