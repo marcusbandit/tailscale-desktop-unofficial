@@ -37,6 +37,33 @@ either, belong with [Tailscale](https://github.com/tailscale/tailscale/issues), 
 
 Keep pull requests to one change. A refactor and a feature in one PR are hard to review.
 
+## Platforms
+
+All three systems share one code path above `src/transport.rs`, which opens the connection to
+tailscaled: the unix socket on Linux, a named pipe on Windows, and on macOS the Tailscale app's
+localhost port with its token, or the open-source daemon's socket. Everything else, Taildrop
+included, goes through the LocalAPI. Linux-only pieces, like starting tailscaled with sudo or
+turning on IP forwarding, check the OS before they run.
+
+CI runs the tests on Linux, Windows and macOS, installs the real Tailscale on each, and checks
+the app reaches it (`cargo test -- --ignored reaches_tailscaled`).
+
+## Releasing
+
+1. Bump `version` in `Cargo.toml` and commit it through a pull request.
+2. Tag the merge commit `vX.Y.Z` with the same version and push the tag. The release workflow
+   builds the Linux tarballs, the Windows installer and zip, and the macOS app, then publishes
+   them as a GitHub release.
+3. Update the packages from the templates in `packaging/`, filling in the version and the
+   checksums from the release's `SHA256SUMS`:
+   - AUR: `packaging/aur/*/PKGBUILD`, then `makepkg --printsrcinfo > .SRCINFO` and push each to
+     `ssh://aur@aur.archlinux.org/<name>.git`
+   - Homebrew: `packaging/homebrew/tailscale-desktop-unofficial.rb` into `Casks/` of
+     `marcusbandit/homebrew-tap`
+   - winget: `packaging/winget/*.yaml` into
+     `manifests/m/MarcusBandit/TailscaleDesktopUnofficial/X.Y.Z/` of a pull request to
+     `microsoft/winget-pkgs`
+
 ## Screenshots for development
 
 `scripts/shot.sh NAME [VAR=value ...]` runs the debug binary inside a headless `gamescope` and

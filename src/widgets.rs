@@ -125,11 +125,8 @@ impl Widget for Btn<'_> {
         };
         let fg = self.color.unwrap_or(if self.on { ACCENT } else { fg });
         let galley = (!self.text.is_empty()).then(|| {
-            ui.painter().layout_no_wrap(
-                self.text.to_owned(),
-                FontId::proportional(ty::BUTTON),
-                fg,
-            )
+            ui.painter()
+                .layout_no_wrap(self.text.to_owned(), FontId::proportional(ty::BUTTON), fg)
         });
         let w = match (&galley, self.glyph) {
             (None, _) => h,
@@ -208,10 +205,12 @@ impl Widget for Btn<'_> {
 /// Places a one-line galley so the middle of its capitals sits on `left_mid.y`,
 /// which is where an icon beside it is centered.
 pub fn text_at_mid(p: &Painter, left_mid: Pos2, galley: Arc<Galley>, color: Color32) {
-    let size = galley
-        .rows
-        .first()
-        .and_then(|r| r.row.glyphs.first().map(|g| (r.pos.y + g.pos.y, g.font_height)));
+    let size = galley.rows.first().and_then(|r| {
+        r.row
+            .glyphs
+            .first()
+            .map(|g| (r.pos.y + g.pos.y, g.font_height))
+    });
     let top = match size {
         Some((baseline, font_h)) => {
             // Noto Sans capitals are 0.714 em tall; the em is about 0.73 of the
@@ -222,8 +221,10 @@ pub fn text_at_mid(p: &Painter, left_mid: Pos2, galley: Arc<Galley>, color: Colo
         None => left_mid.y - galley.size().y / 2.0,
     };
     // The galley may carry its own color from layout; this one wins.
-    p.add(egui::epaint::TextShape::new(egui::pos2(left_mid.x, top), galley, color)
-        .with_override_text_color(color));
+    p.add(
+        egui::epaint::TextShape::new(egui::pos2(left_mid.x, top), galley, color)
+            .with_override_text_color(color),
+    );
 }
 
 /// Text placed with `text_at_mid`, for painters that draw their own rows.
@@ -323,9 +324,23 @@ pub fn divider(ui: &mut Ui, space: f32) {
 }
 
 /// A centered glyph with its label to the right; used by navigation rows.
-pub fn icon_label(p: &Painter, icon_c: Pos2, glyph: &str, ib: f32, text: &str, color: Color32, icon_color: Color32) {
+pub fn icon_label(
+    p: &Painter,
+    icon_c: Pos2,
+    glyph: &str,
+    ib: f32,
+    text: &str,
+    color: Color32,
+    icon_color: Color32,
+) {
     paint_glyph(p, icon_c, glyph, ib, icon_color);
-    paint_text(p, icon_c + vec2(ib / 2.0 + 12.0, 0.0), text, ty::BODY, color);
+    paint_text(
+        p,
+        icon_c + vec2(ib / 2.0 + 12.0, 0.0),
+        text,
+        ty::BODY,
+        color,
+    );
 }
 
 /// Text anchored on the right edge, vertically centered by its capitals.

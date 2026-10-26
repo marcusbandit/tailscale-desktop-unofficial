@@ -28,7 +28,14 @@ impl App {
         ui.horizontal(|ui| {
             let (r, _) = ui.allocate_exact_size(vec2(40.0, 40.0), Sense::hover());
             let os_icon = self.icon_of(n);
-            paint_badge(ui.painter(), r.center(), 19.0, os_icon.glyph, Badge::of(n), 1.0);
+            paint_badge(
+                ui.painter(),
+                r.center(),
+                19.0,
+                os_icon.glyph,
+                Badge::of(n),
+                1.0,
+            );
             ui.interact(r, ui.id().with("panel-badge"), Sense::hover())
                 .on_hover_text(&os_icon.label);
             ui.add_space(sp::XS);
@@ -118,7 +125,11 @@ impl App {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                if let Some(log) = self.pings.get(&n.stable_id).filter(|l| !l.results.is_empty()) {
+                if let Some(log) = self
+                    .pings
+                    .get(&n.stable_id)
+                    .filter(|l| !l.results.is_empty())
+                {
                     ui.add_space(sp::M);
                     ui.spacing_mut().item_spacing.y = 2.0;
                     for r in &log.results {
@@ -144,7 +155,9 @@ impl App {
                                 });
                             }
                             Err(e) => {
-                                ui.label(RichText::new(mask.external(e)).size(ty::SMALL).color(RED));
+                                ui.label(
+                                    RichText::new(mask.external(e)).size(ty::SMALL).color(RED),
+                                );
                             }
                         }
                     }
@@ -190,8 +203,16 @@ impl App {
                 {
                     widgets::divider(ui, sp::M);
                     widgets::section(ui, "Access");
-                    access_row(ui, "You can reach it", &m.get(&s.me.stable_id, &n.stable_id));
-                    access_row(ui, "It can reach you", &m.get(&n.stable_id, &s.me.stable_id));
+                    access_row(
+                        ui,
+                        "You can reach it",
+                        &m.get(&s.me.stable_id, &n.stable_id),
+                    );
+                    access_row(
+                        ui,
+                        "It can reach you",
+                        &m.get(&n.stable_id, &s.me.stable_id),
+                    );
                 }
 
                 if !n.is_self && n.exit_node_option {
@@ -211,7 +232,10 @@ impl App {
                             });
                         }
                     } else if ui
-                        .add_enabled(n.online, Btn::new("Route internet through it").glyph(icon::GLOBE))
+                        .add_enabled(
+                            n.online,
+                            Btn::new("Route internet through it").glyph(icon::GLOBE),
+                        )
                         .clicked()
                     {
                         self.act(&ctx, "exit", move || {
@@ -266,10 +290,18 @@ impl App {
                     rows.push(("Home relay", n.relay.clone(), TEXT));
                 }
                 if !n.is_self {
-                    rows.push(("Sent / received", format!("{} / {}", bytes(n.tx), bytes(n.rx)), TEXT));
+                    rows.push((
+                        "Sent / received",
+                        format!("{} / {}", bytes(n.tx), bytes(n.rx)),
+                        TEXT,
+                    ));
                 }
                 if !n.primary_routes.is_empty() {
-                    rows.push(("Subnet routes", mask.text(&n.primary_routes.join(", ")), TEXT));
+                    rows.push((
+                        "Subnet routes",
+                        mask.text(&n.primary_routes.join(", ")),
+                        TEXT,
+                    ));
                 }
                 rows.push(("Added", local_time(n.created), TEXT));
                 rows.push(("Key expires", local_time(n.key_expiry), TEXT));
@@ -347,7 +379,11 @@ impl App {
         let titles = [
             ("Both ways".to_owned(), icon::ARROWS_H, TEXT),
             (format!("Only {name} can reach"), icon::ARROW_RIGHT, AMBER),
-            (format!("Only they can reach {name}"), icon::ARROW_LEFT, AMBER),
+            (
+                format!("Only they can reach {name}"),
+                icon::ARROW_LEFT,
+                AMBER,
+            ),
             ("Blocked".to_owned(), icon::BAN, RED),
             ("Not known yet".to_owned(), icon::HELP, MUTED),
         ];
@@ -395,7 +431,13 @@ impl App {
         let c = rect.left_center() + vec2(sp::S + 10.0, 0.0);
         paint_badge(p, c, 10.0, self.icon_of(o).glyph, Badge::of(o), 1.0);
         let col = if o.online || o.is_self { TEXT } else { MUTED };
-        widgets::paint_text(p, c + vec2(10.0 + sp::M, 0.0), &self.mask.name(o), ty::BUTTON, col);
+        widgets::paint_text(
+            p,
+            c + vec2(10.0 + sp::M, 0.0),
+            &self.mask.name(o),
+            ty::BUTTON,
+            col,
+        );
         resp
     }
 }

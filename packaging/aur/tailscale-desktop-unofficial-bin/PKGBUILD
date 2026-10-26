@@ -1,0 +1,30 @@
+# Maintainer: Marcus Rosado <22052802+marcusbandit@users.noreply.github.com>
+
+pkgname=tailscale-desktop-unofficial-bin
+_name=tailscale-desktop-unofficial
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='Unofficial desktop app for Tailscale: devices, access graph and Taildrop'
+arch=('x86_64' 'aarch64')
+url='https://github.com/marcusbandit/tailscale-desktop-unofficial'
+license=('MIT')
+depends=('tailscale' 'gcc-libs' 'glibc' 'libglvnd' 'libxkbcommon' 'wayland' 'libx11' 'libxcursor' 'libxi' 'libxrandr' 'hicolor-icon-theme')
+optdepends=('libsecret: keep the API credential for OS versions'
+            'xdg-desktop-portal: file picker for Taildrop'
+            'xdg-user-dirs: save received files to your Downloads folder')
+provides=("$_name")
+conflicts=("$_name")
+source_x86_64=("$url/releases/download/v$pkgver/$_name-$pkgver-x86_64-linux.tar.gz")
+source_aarch64=("$url/releases/download/v$pkgver/$_name-$pkgver-aarch64-linux.tar.gz")
+sha256sums_x86_64=('@SHA_X86_64@')
+sha256sums_aarch64=('@SHA_AARCH64@')
+
+package() {
+  cd "$_name-$pkgver-$CARCH-linux"
+  install -Dm755 "$_name" "$pkgdir/usr/bin/$_name"
+  install -Dm644 "$_name.desktop" "$pkgdir/usr/share/applications/$_name.desktop"
+  install -Dm644 icon.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/$_name.svg"
+  install -Dm644 icon-256.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/$_name.png"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 TRADEMARKS.md "$pkgdir/usr/share/licenses/$pkgname/TRADEMARKS.md"
+}

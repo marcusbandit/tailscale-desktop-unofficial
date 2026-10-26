@@ -19,8 +19,8 @@ use crate::osinfo::{self, OsInfo};
 use crate::privacy::Mask;
 use crate::settings::Settings;
 use crate::theme::{icon, *};
-use crate::widgets::{self, Btn};
 use crate::ts::{self, Node, Pong, Snapshot};
+use crate::widgets::{self, Btn};
 
 mod detail;
 mod onboard;
@@ -237,7 +237,12 @@ impl App {
             _ => {}
         }
         if let Ok(v) = std::env::var("TSDU_STAGE") {
-            self.stage(v.split(':').filter(|p| !p.is_empty()).map(PathBuf::from).collect());
+            self.stage(
+                v.split(':')
+                    .filter(|p| !p.is_empty())
+                    .map(PathBuf::from)
+                    .collect(),
+            );
         }
         if let Ok(v) = std::env::var("TSDU_TARGETS") {
             self.drop.pending_names = v.split(',').map(str::to_owned).collect();
@@ -305,7 +310,10 @@ impl App {
 
     /// Current health warnings, and which of them still get a banner.
     fn warnings(&self) -> (Vec<String>, Vec<String>) {
-        let all = self.snap.as_ref().map_or_else(Vec::new, |s| s.health.clone());
+        let all = self
+            .snap
+            .as_ref()
+            .map_or_else(Vec::new, |s| s.health.clone());
         let fresh = all
             .iter()
             .filter(|h| !self.dismissed.contains(*h))
@@ -722,11 +730,7 @@ fn toggle(ui: &mut Ui, on: bool, big: bool) -> egui::Response {
     };
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     let t = ui.ctx().animate_bool_with_time(resp.id, on, 0.15);
-    let bg = lerp_color(
-        PRESSED,
-        if big { GREEN } else { ACCENT },
-        t,
-    );
+    let bg = lerp_color(PRESSED, if big { GREEN } else { ACCENT }, t);
     let p = ui.painter();
     p.rect_filled(rect, rect.height() / 2.0, bg);
     let r = rect.height() / 2.0 - 3.0;
@@ -797,7 +801,12 @@ fn tab(ui: &mut Ui, sel: bool, label: &str, count: usize) -> egui::Response {
     };
     p.rect_filled(rect, RADIUS, fill);
     let x = rect.left() + sp::M;
-    widgets::text_at_mid(&p, egui::pos2(x, rect.center().y), g, if sel { TEXT } else { MUTED });
+    widgets::text_at_mid(
+        &p,
+        egui::pos2(x, rect.center().y),
+        g,
+        if sel { TEXT } else { MUTED },
+    );
     widgets::text_at_mid(
         &p,
         egui::pos2(x + gw + 6.0, rect.center().y),
@@ -824,7 +833,11 @@ fn pill(ui: &mut Ui, dot: Color32, text: &str, sub: &str, warn: bool) -> egui::R
     let (rect, resp) =
         ui.allocate_exact_size(vec2(30.0 + gw + sw + ww + 30.0, 32.0), Sense::click());
     let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
-    let fill = if open || resp.hovered() { HOVER } else { SURFACE };
+    let fill = if open || resp.hovered() {
+        HOVER
+    } else {
+        SURFACE
+    };
     p.rect(
         rect,
         RADIUS,
@@ -864,7 +877,13 @@ fn menu_item(ui: &mut Ui, glyph: &str, text: &str) -> bool {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     let p = ui.painter();
-    paint_glyph(p, rect.left_center() + vec2(sp::M + 7.0, 0.0), glyph, 13.0, MUTED);
+    paint_glyph(
+        p,
+        rect.left_center() + vec2(sp::M + 7.0, 0.0),
+        glyph,
+        13.0,
+        MUTED,
+    );
     widgets::paint_text(
         p,
         rect.left_center() + vec2(sp::M + 7.0 + 6.5 + sp::M, 0.0),
@@ -886,7 +905,8 @@ fn copy_label(ui: &mut Ui, text: &str, size: f32) -> bool {
         .response
         .interact(Sense::click());
     if resp.hovered() {
-        ui.painter().rect_filled(resp.rect, 6.0, HOVER.gamma_multiply(0.6));
+        ui.painter()
+            .rect_filled(resp.rect, 6.0, HOVER.gamma_multiply(0.6));
         paint_glyph(
             ui.painter(),
             resp.rect.right_center() + vec2(12.0, 0.0),
@@ -999,8 +1019,10 @@ impl eframe::App for App {
         self.drain();
         let ctx = ui.ctx().clone();
 
-        let privacy_key =
-            egui::KeyboardShortcut::new(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::P);
+        let privacy_key = egui::KeyboardShortcut::new(
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            egui::Key::P,
+        );
         if ctx.input_mut(|i| i.consume_shortcut(&privacy_key)) {
             self.toggle_privacy();
         }
@@ -1099,7 +1121,15 @@ impl eframe::App for App {
                         let (snap, m) =
                             (self.snap.as_ref().unwrap(), self.matrix.as_ref().unwrap());
                         let mask = self.mask.clone();
-                        graph::show(ui, &mut self.graph, snap, m, &mut self.selected, &mask, &self.icons);
+                        graph::show(
+                            ui,
+                            &mut self.graph,
+                            snap,
+                            m,
+                            &mut self.selected,
+                            &mask,
+                            &self.icons,
+                        );
                     }
                     View::Taildrop => self.taildrop(ui),
                     View::Settings => {}
@@ -1130,10 +1160,10 @@ impl App {
                 match self.snap.clone() {
                     Some(s) => self.status(ui, &s),
                     None => {
-                        let b = Btn::new("Start tailscaled").glyph(icon::POWER).primary();
+                        let b = Btn::new(ts::START_SHORT).glyph(icon::POWER).primary();
                         if ui.add(b).clicked() {
                             self.act(&ctx, "daemon", || {
-                                ts::start_daemon().map(|_| "tailscaled started".into())
+                                ts::start_daemon().map(|_| ts::STARTED.into())
                             });
                         }
                     }
@@ -1245,7 +1275,8 @@ impl App {
                         .inner_margin(Margin::symmetric(sp::M as i8, sp::S as i8))
                         .show(ui, |ui| {
                             ui.horizontal_top(|ui| {
-                                let (r, _) = ui.allocate_exact_size(vec2(14.0, 18.0), Sense::hover());
+                                let (r, _) =
+                                    ui.allocate_exact_size(vec2(14.0, 18.0), Sense::hover());
                                 paint_glyph(ui.painter(), r.center(), icon::WARN, 12.0, AMBER);
                                 ui.add(
                                     egui::Label::new(
@@ -1294,7 +1325,9 @@ impl App {
             .small();
         if ui
             .add_enabled(!busy, fix)
-            .on_hover_text("Asks for your password, then turns forwarding on now and after every reboot")
+            .on_hover_text(
+                "Asks for your password, then turns forwarding on now and after every reboot",
+            )
             .clicked()
         {
             let prefs = prefs.clone();
@@ -1348,7 +1381,11 @@ impl App {
                         .layout(Layout::right_to_left(Align::Center)),
                 );
                 let close = Btn::icon(icon::CLOSE).small().color(AMBER);
-                if right.add(close).on_hover_text("Hide this warning").clicked() {
+                if right
+                    .add(close)
+                    .on_hover_text("Hide this warning")
+                    .clicked()
+                {
                     self.hide_warning(h);
                 }
                 if fixable {
@@ -1422,8 +1459,18 @@ impl App {
         paint_badge(p, c, 16.0, self.icon_of(me).glyph, Badge::of(me), 1.0);
         let x = c.x + 16.0 + sp::M;
         let clip = p.with_clip_rect(rect.shrink(2.0));
-        widgets::paint_text(&clip, egui::pos2(x, rect.center().y - 9.0), &self.mask.name(me), ty::BODY, TEXT);
-        let prefs = self.snap.as_ref().map(|s| s.prefs.clone()).unwrap_or_default();
+        widgets::paint_text(
+            &clip,
+            egui::pos2(x, rect.center().y - 9.0),
+            &self.mask.name(me),
+            ty::BODY,
+            TEXT,
+        );
+        let prefs = self
+            .snap
+            .as_ref()
+            .map(|s| s.prefs.clone())
+            .unwrap_or_default();
         let using_exit = !prefs.exit_node_id.is_empty();
         let line = if using_exit {
             "Using an exit node".to_owned()
@@ -1432,7 +1479,13 @@ impl App {
         } else {
             self.mask.ip(me.ipv4())
         };
-        widgets::paint_text(&clip, egui::pos2(x, rect.center().y + 10.0), &line, ty::SMALL, MUTED);
+        widgets::paint_text(
+            &clip,
+            egui::pos2(x, rect.center().y + 10.0),
+            &line,
+            ty::SMALL,
+            MUTED,
+        );
         if resp.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
@@ -1449,14 +1502,14 @@ impl App {
             ui.add_space(ui.available_height() * 0.3);
             ui.label(RichText::new(icon::POWER).size(42.0).color(FAINT));
             ui.add_space(8.0);
-            ui.label(RichText::new("Can't reach tailscaled").heading());
+            ui.label(RichText::new(ts::UNREACHABLE).heading());
             if let Some(e) = &self.error {
                 ui.label(RichText::new(self.mask.external(e)).color(MUTED));
             }
             ui.add_space(12.0);
-            if primary_button(ui, "Start tailscaled (asks for sudo)").clicked() {
+            if primary_button(ui, ts::START_LABEL).clicked() {
                 self.act(&ctx, "daemon", || {
-                    ts::start_daemon().map(|_| "tailscaled started".into())
+                    ts::start_daemon().map(|_| ts::STARTED.into())
                 });
             }
         });
@@ -1476,7 +1529,12 @@ impl App {
             if state == "NeedsLogin" {
                 ui.label(RichText::new("Logged out").heading());
                 ui.label(
-                    RichText::new("Run `tailscale login` to sign this device in.").color(MUTED),
+                    RichText::new(if cfg!(target_os = "linux") {
+                        "Run `tailscale login` to sign this device in."
+                    } else {
+                        "Sign in from the Tailscale app."
+                    })
+                    .color(MUTED),
                 );
             } else {
                 ui.label(RichText::new("Tailscale is off").heading());
@@ -1516,9 +1574,7 @@ impl App {
                     .margin(Margin::symmetric(10, 7)),
             );
             let help = ui.add(Btn::icon(icon::HELP)).on_hover_text("Search tips");
-            egui::Popup::menu(&help)
-                .gap(6.0)
-                .show(|ui| search_tips(ui));
+            egui::Popup::menu(&help).gap(6.0).show(|ui| search_tips(ui));
             ui.add_space(sp::M);
             for (f, label) in [
                 (Filter::All, "All"),
@@ -1631,7 +1687,14 @@ impl App {
         let dim = !n.online && !n.is_self;
         let os_icon = self.icon_of(n);
         let badge_c = egui::pos2(inner.left() + 16.0, inner.center().y);
-        paint_badge(ui.painter(), badge_c, 16.0, os_icon.glyph, Badge::of(n), 1.0);
+        paint_badge(
+            ui.painter(),
+            badge_c,
+            16.0,
+            os_icon.glyph,
+            Badge::of(n),
+            1.0,
+        );
         // Hovering the badge says what the device is.
         ui.interact(
             egui::Rect::from_center_size(badge_c, vec2(32.0, 32.0)),
@@ -1649,10 +1712,8 @@ impl App {
         } else {
             0.0
         };
-        let act_r = egui::Rect::from_min_max(
-            egui::pos2(inner.right() - act_w, inner.top()),
-            inner.max,
-        );
+        let act_r =
+            egui::Rect::from_min_max(egui::pos2(inner.right() - act_w, inner.top()), inner.max);
         let ip_r = egui::Rect::from_min_max(
             egui::pos2(act_r.left() - sp::M - ip_w, inner.top()),
             egui::pos2(act_r.left() - sp::M, inner.bottom()),
@@ -1822,7 +1883,7 @@ impl App {
     }
 
     fn pick_and_send(&mut self, ctx: &egui::Context, n: &Node) {
-        let (ip, name) = (n.ipv4().to_owned(), self.mask.name(n));
+        let (id, name) = (n.stable_id.clone(), self.mask.name(n));
         self.act(ctx, &format!("send-{}", n.stable_id), move || {
             let Some(files) = rfd::FileDialog::new()
                 .set_title(format!("Send to {name}"))
@@ -1830,7 +1891,7 @@ impl App {
             else {
                 return Ok(String::new());
             };
-            send_all(&files, &ip, &name)
+            send_all(&files, &id, &name)
         });
     }
 
@@ -1858,13 +1919,17 @@ impl App {
             .and_then(|id| self.snap.as_ref()?.node(id).cloned());
         match target {
             Some(n) if n.taildrop_ok() => {
-                let (ip, name) = (n.ipv4().to_owned(), self.mask.name(&n));
+                let (id, name) = (n.stable_id.clone(), self.mask.name(&n));
                 self.act(ctx, &format!("send-{}", n.stable_id), move || {
-                    send_all(&dropped, &ip, &name)
+                    send_all(&dropped, &id, &name)
                 });
             }
             Some(n) => self.toast(
-                format!("Can't send to {}: {}", self.mask.name(&n), n.taildrop_reason()),
+                format!(
+                    "Can't send to {}: {}",
+                    self.mask.name(&n),
+                    n.taildrop_reason()
+                ),
                 true,
             ),
             None => self.toast("Select a device first, then drop files to send them", true),
@@ -1938,13 +2003,14 @@ fn how_to_fix(ui: &mut Ui) {
         .on_hover_text("Tailscale's guide to IP forwarding")
         .clicked()
     {
-        ui.ctx().open_url(egui::OpenUrl::new_tab(ts::FORWARDING_URL));
+        ui.ctx()
+            .open_url(egui::OpenUrl::new_tab(ts::FORWARDING_URL));
     }
 }
 
-fn send_all(files: &[PathBuf], ip: &str, name: &str) -> Result<String, String> {
+fn send_all(files: &[PathBuf], stable_id: &str, name: &str) -> Result<String, String> {
     for f in files {
-        ts::send_file(f, ip)?;
+        ts::send_file(f, stable_id)?;
     }
     Ok(format!("Sent {} to {name}", files_label(files.len())))
 }

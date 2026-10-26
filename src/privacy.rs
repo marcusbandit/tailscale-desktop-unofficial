@@ -51,7 +51,10 @@ impl Mask {
 
     fn swaps_for(&self, snap: Option<&Snapshot>, names: bool) -> Vec<(String, String)> {
         let mut swaps = Vec::new();
-        if let Some(home) = std::env::var("HOME").ok().filter(|h| h.len() > 1) {
+        if let Some(home) = dirs::home_dir()
+            .map(|h| h.to_string_lossy().into_owned())
+            .filter(|h| h.len() > 1)
+        {
             swaps.push((home, "~".to_owned()));
         }
         if let Some(s) = snap {
@@ -298,10 +301,7 @@ mod tests {
     fn addresses_keep_their_shape() {
         let m = Mask::new(true, false, None);
         assert_eq!(m.ip("100.94.40.21"), "100.••.••.21");
-        assert_eq!(
-            m.ip("fd7a:115c:a1e0::5d01:2815"),
-            "fd7a:115c:a1e0::••••"
-        );
+        assert_eq!(m.ip("fd7a:115c:a1e0::5d01:2815"), "fd7a:115c:a1e0::••••");
         assert_eq!(m.who("marcus@example.com"), "m•••@•••");
         assert_eq!(m.who("bandit"), "b•••");
         assert_eq!(m.secret("84.2.3.4:41641"), "hidden");
@@ -359,7 +359,9 @@ mod tests {
         };
         let m = Mask::new(true, true, Some(&snap));
         assert_eq!(
-            m.external("can't send to nemurenai (nemurenai.tailfe12ab.ts.net) as marcus@example.com"),
+            m.external(
+                "can't send to nemurenai (nemurenai.tailfe12ab.ts.net) as marcus@example.com"
+            ),
             "can't send to device-1 (device-1.tail••••.ts.net) as m•••@•••"
         );
         // The app's own text already carries masked names; it keeps its words.

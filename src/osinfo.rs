@@ -7,8 +7,10 @@
 //! client the app asks it. The client secret lives in the desktop keyring.
 
 use std::collections::HashMap;
+#[cfg(target_os = "linux")]
 use std::io::Write;
 use std::path::PathBuf;
+#[cfg(target_os = "linux")]
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -166,7 +168,7 @@ fn distro_name(id: &str) -> String {
 
 /// This device's own Hostinfo, which tailscaled has in full.
 pub fn local() -> Option<OsInfo> {
-    let out = Command::new("tailscale")
+    let out = crate::transport::cli()
         .args(["debug", "hostinfo"])
         .output()
         .ok()?;
@@ -190,6 +192,7 @@ fn from_hostinfo(v: &Value) -> OsInfo {
 // ---------------------------------------------------------------------------
 // Keyring
 
+#[cfg(target_os = "linux")]
 const KEYRING_ATTRS: [&str; 4] = [
     "app",
     "tailscale-desktop-unofficial",
@@ -199,6 +202,7 @@ const KEYRING_ATTRS: [&str; 4] = [
 
 /// The stored secret, `Ok(None)` when there is none, and an error when the
 /// keyring could not be asked, such as while it is still locked after login.
+#[cfg(target_os = "linux")]
 pub fn load_secret() -> Result<Option<String>, String> {
     let out = Command::new("secret-tool")
         .arg("lookup")
@@ -218,6 +222,7 @@ pub fn load_secret() -> Result<Option<String>, String> {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub fn store_secret(secret: &str) -> Result<(), String> {
     let mut child = Command::new("secret-tool")
         .args(["store", "--label=Tailscale Desktop API access"])
@@ -243,12 +248,44 @@ pub fn store_secret(secret: &str) -> Result<(), String> {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub fn clear_secret() {
     Command::new("secret-tool")
         .arg("clear")
         .args(KEYRING_ATTRS)
         .status()
         .ok();
+}
+
+// Windows and macOS: Credential Manager and the login Keychain.
+
+#[cfg(not(target_os = "linux"))]
+fn keyring_entry() -> Result<keyring::Entry, String> {
+    keyring::Entry::new("tailscale-desktop-unofficial", "oauth-client")
+        .map_err(|e| format!("The keyring is not available: {e}"))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn load_secret() -> Result<Option<String>, String> {
+    match keyring_entry()?.get_password() {
+        Ok(s) => Ok(Some(s)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(format!("The keyring is not available: {e}")),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn store_secret(secret: &str) -> Result<(), String> {
+    keyring_entry()?
+        .set_password(secret)
+        .map_err(|e| format!("The keyring refused the secret: {e}"))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn clear_secret() {
+    if let Ok(e) = keyring_entry() {
+        e.delete_credential().ok();
+    }
 }
 
 /// An OAuth client secret is `tskey-client-<client id>-<secret>`.
@@ -432,12 +469,13 @@ pub fn combine(
 // ---------------------------------------------------------------------------
 // Cache, so versions show at once on the next start and while offline.
 
+/// `~/.cache` (or `XDG_CACHE_HOME`) on Linux, the platform's cache folder elsewhere.
 fn cache_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))?;
-    Some(base.join("tailscale-desktop-unofficial").join("os.json"))
+    Some(
+        dirs::cache_dir()?
+            .join("tailscale-desktop-unofficial")
+            .join("os.json"),
+    )
 }
 
 pub fn load_cache() -> HashMap<String, OsInfo> {

@@ -76,7 +76,9 @@ impl App {
             }
         }
         // A device that went away can't stay picked.
-        self.drop.targets.retain(|id| ready.iter().any(|p| &p.stable_id == id));
+        self.drop
+            .targets
+            .retain(|id| ready.iter().any(|p| &p.stable_id == id));
         self.drop.chips.clear();
         let dragging = ctx.input(|i| !i.raw.hovered_files.is_empty());
         if dragging && self.drop.drag_from.is_none() {
@@ -88,8 +90,10 @@ impl App {
             .map(|p| (*p).clone())
             .collect();
 
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            widgets::column(ui, widgets::COLUMN, |ui| {
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                widgets::column(ui, widgets::COLUMN, |ui| {
                     widgets::page_title(ui, "Taildrop", "Send files between your devices", |_| {});
                     self.drop_zone(ui, &ctx);
                     ui.add_space(sp::L);
@@ -158,8 +162,8 @@ impl App {
                     ui.add_space(sp::XL);
                     self.inbox(ui, &ctx, &s.waiting_files);
                     ui.add_space(sp::XL);
+                });
             });
-        });
     }
 
     /// The hero: a dashed box that takes dropped files, with a button for
@@ -189,8 +193,22 @@ impl App {
             (c - vec2(0.0, 18.0), c + vec2(0.0, 22.0))
         } else {
             let at = c - vec2(0.0, 44.0);
-            p.circle_filled(at, 22.0, if dragging { ACCENT.gamma_multiply(0.2) } else { HOVER });
-            paint_glyph(p, at, icon::UPLOAD, 18.0, if dragging { ACCENT } else { TEXT });
+            p.circle_filled(
+                at,
+                22.0,
+                if dragging {
+                    ACCENT.gamma_multiply(0.2)
+                } else {
+                    HOVER
+                },
+            );
+            paint_glyph(
+                p,
+                at,
+                icon::UPLOAD,
+                18.0,
+                if dragging { ACCENT } else { TEXT },
+            );
             p.text(
                 c + vec2(0.0, 18.0),
                 egui::Align2::CENTER_CENTER,
@@ -229,7 +247,10 @@ impl App {
             let total: u64 = self.drop.files.iter().map(|(_, b)| b).sum();
             widgets::section(ui, &format!("Files to send ({n}, {})", bytes(total)));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.add_enabled(!busy, Btn::new("Clear all").small()).clicked() {
+                if ui
+                    .add_enabled(!busy, Btn::new("Clear all").small())
+                    .clicked()
+                {
                     self.drop.files.clear();
                 }
             });
@@ -239,9 +260,20 @@ impl App {
         let files = &self.drop.files;
         file_box(ui, "staged", files.len(), |ui, i, gutter| {
             let (f, size) = &files[i];
-            let name = f.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+            let name = f
+                .file_name()
+                .map(|n| n.to_string_lossy())
+                .unwrap_or_default();
             let path = f.display().to_string();
-            if file_row(ui, &name, &path, *size, gutter, (icon::CLOSE, "Take out"), !busy) {
+            if file_row(
+                ui,
+                &name,
+                &path,
+                *size,
+                gutter,
+                (icon::CLOSE, "Take out"),
+                !busy,
+            ) {
                 remove = Some(i);
             }
         });
@@ -269,8 +301,16 @@ impl App {
             (_, 0) => (format!("Pick who gets the {what}"), false),
             _ => (format!("{what} to {to}"), true),
         };
-        let fill = if ready { ACCENT.gamma_multiply(0.08) } else { SURFACE };
-        let edge = if ready { ACCENT.gamma_multiply(0.5) } else { BORDER };
+        let fill = if ready {
+            ACCENT.gamma_multiply(0.08)
+        } else {
+            SURFACE
+        };
+        let edge = if ready {
+            ACCENT.gamma_multiply(0.5)
+        } else {
+            BORDER
+        };
         card_frame(0)
             .fill(fill)
             .stroke(Stroke::new(1.0, edge))
@@ -291,7 +331,10 @@ impl App {
                                 ui.add(egui::Spinner::new());
                             }
                             let col = if ready { TEXT } else { MUTED };
-                            ui.add(egui::Label::new(RichText::new(hint).size(ty::BUTTON).color(col)).truncate());
+                            ui.add(
+                                egui::Label::new(RichText::new(hint).size(ty::BUTTON).color(col))
+                                    .truncate(),
+                            );
                         });
                     },
                 );
@@ -302,7 +345,7 @@ impl App {
         let files: Vec<PathBuf> = self.drop.files.iter().map(|(f, _)| f.clone()).collect();
         let targets: Vec<Target> = picked
             .iter()
-            .map(|n| (n.stable_id.clone(), n.ipv4().to_owned(), self.mask.name(n)))
+            .map(|n| (n.stable_id.clone(), self.mask.name(n)))
             .collect();
         self.drop.sending = targets.len();
         let tx = self.tx.clone();
@@ -317,7 +360,10 @@ impl App {
     fn pick_files(&mut self, ctx: &egui::Context) {
         let tx = self.tx.clone();
         self.act(ctx, "pick", move || {
-            if let Some(files) = rfd::FileDialog::new().set_title("Choose files to send").pick_files() {
+            if let Some(files) = rfd::FileDialog::new()
+                .set_title("Choose files to send")
+                .pick_files()
+            {
                 tx.send(Msg::Picked(files)).ok();
             }
             Ok(String::new())
@@ -327,13 +373,15 @@ impl App {
     /// A device as a target: its badge and name in a chip that can be picked.
     fn target_chip(&mut self, ui: &mut Ui, n: &Node, on: bool, enabled: bool) -> egui::Response {
         let name = self.mask.name(n);
-        let g = ui.painter().layout_no_wrap(
-            name,
-            egui::FontId::proportional(ty::BUTTON),
-            TEXT,
-        );
+        let g = ui
+            .painter()
+            .layout_no_wrap(name, egui::FontId::proportional(ty::BUTTON), TEXT);
         let w = 6.0 + 20.0 + sp::S + g.size().x + if on { sp::S + 12.0 } else { 0.0 } + sp::M;
-        let sense = if enabled { Sense::click() } else { Sense::hover() };
+        let sense = if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        };
         let (rect, resp) = ui.allocate_exact_size(vec2(w, 32.0), sense);
         if enabled {
             self.drop.chips.push((rect, n.stable_id.clone()));
@@ -358,15 +406,33 @@ impl App {
         let p = ui.painter();
         p.rect_filled(rect, RADIUS, fill.gamma_multiply(a));
         if on || over {
-            p.rect_stroke(rect, RADIUS, Stroke::new(1.0, ACCENT), egui::StrokeKind::Inside);
+            p.rect_stroke(
+                rect,
+                RADIUS,
+                Stroke::new(1.0, ACCENT),
+                egui::StrokeKind::Inside,
+            );
         }
         let c = rect.left_center() + vec2(6.0 + 10.0, 0.0);
-        paint_badge(p, c, 10.0, self.icon_of(n).glyph, crate::theme::Badge::of(n), a);
+        paint_badge(
+            p,
+            c,
+            10.0,
+            self.icon_of(n).glyph,
+            crate::theme::Badge::of(n),
+            a,
+        );
         let x = c.x + 10.0 + sp::S;
         let gw = g.size().x;
         widgets::text_at_mid(p, egui::pos2(x, rect.center().y), g, TEXT.gamma_multiply(a));
         if on {
-            paint_glyph(p, egui::pos2(x + gw + sp::S + 6.0, rect.center().y), icon::CHECK, 11.0, ACCENT);
+            paint_glyph(
+                p,
+                egui::pos2(x + gw + sp::S + 6.0, rect.center().y),
+                icon::CHECK,
+                11.0,
+                ACCENT,
+            );
         }
         if resp.hovered() && enabled {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -390,7 +456,9 @@ impl App {
             widgets::section(ui, &format!("Arrived here ({})", files.len()));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let busy = self.busy.contains("receive");
-                let b = Btn::new("Save all to Downloads").glyph(icon::DOWNLOAD).small();
+                let b = Btn::new("Save all to Downloads")
+                    .glyph(icon::DOWNLOAD)
+                    .small();
                 if ui.add_enabled(!busy, b).clicked() {
                     self.act(ctx, "receive", || {
                         ts::receive_files().map(|d| format!("Saved to {}", d.display()))
@@ -405,7 +473,15 @@ impl App {
         let mut discard = None;
         file_box(ui, "inbox", files.len(), |ui, i, gutter| {
             let f = &files[i];
-            if file_row(ui, &f.name, &f.name, f.size, gutter, (icon::TRASH, "Discard"), true) {
+            if file_row(
+                ui,
+                &f.name,
+                &f.name,
+                f.size,
+                gutter,
+                (icon::TRASH, "Discard"),
+                true,
+            ) {
                 discard = Some(f.name.clone());
             }
         });
@@ -492,15 +568,15 @@ fn file_row(
     clicked
 }
 
-/// A device to send to: stable id, address, shown name.
-type Target = (String, String, String);
+/// A device to send to: stable id, shown name.
+type Target = (String, String);
 
 /// Tries every device even when one fails, and says which got the files.
 /// Also returns the ids of the devices that got all of them.
 fn send_to_all(files: &[PathBuf], targets: &[Target]) -> (Vec<String>, Result<String, String>) {
     let (mut ids, mut ok, mut failed) = (Vec::new(), Vec::new(), Vec::new());
-    for (id, ip, name) in targets {
-        match send_all(files, ip, name) {
+    for (id, name) in targets {
+        match send_all(files, id, name) {
             Ok(_) => {
                 ids.push(id.clone());
                 ok.push(name.clone());
@@ -530,7 +606,13 @@ fn disclosure(ui: &mut Ui, glyph: &str, label: &str) -> egui::Response {
     );
     let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 22.0, 28.0), Sense::click());
     let col = if resp.hovered() { TEXT } else { MUTED };
-    paint_glyph(ui.painter(), rect.left_center() + vec2(6.0, 0.0), glyph, 9.0, col);
+    paint_glyph(
+        ui.painter(),
+        rect.left_center() + vec2(6.0, 0.0),
+        glyph,
+        9.0,
+        col,
+    );
     widgets::text_at_mid(ui.painter(), rect.left_center() + vec2(18.0, 0.0), g, col);
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -556,4 +638,3 @@ fn dashed_round_rect(p: &egui::Painter, r: Rect, radius: f32, stroke: Stroke) {
     pts.push(pts[0]);
     p.extend(Shape::dashed_line(&pts, stroke, 7.0, 5.0));
 }
-

@@ -31,13 +31,10 @@ impl Default for Settings {
     }
 }
 
-/// `~/.config/tailscale-desktop-unofficial`, or under `XDG_CONFIG_HOME`.
+/// `~/.config/tailscale-desktop-unofficial` (or under `XDG_CONFIG_HOME`) on
+/// Linux, Application Support on macOS, and AppData\Roaming on Windows.
 pub fn config_dir() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("tailscale-desktop-unofficial"))
+    Some(dirs::config_dir()?.join("tailscale-desktop-unofficial"))
 }
 
 fn path() -> Option<PathBuf> {
